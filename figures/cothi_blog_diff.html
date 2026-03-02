@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A critique of successor representations — Annotated with CSCG+SR Replication</title>
+<style>
+  /* ── Reset & base ─────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Charter', 'Georgia', 'Cambria', serif;
+    color: #1a1a1a;
+    background: #fff;
+    line-height: 1.7;
+    font-size: 18px;
+  }
+  /* ── Layout ───────────────────────────────────────────────────── */
+  .header-bar {
+    border-bottom: 1px solid #e0e0e0;
+    padding: 14px 0;
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  }
+  .header-bar a { color: #1a1a1a; text-decoration: none; font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+  .container { max-width: 680px; margin: 0 auto; padding: 0 20px; }
+  .post-meta { color: #757575; font-size: 14px; margin: 24px 0 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif; }
+  .post-meta a { color: #757575; text-decoration: none; }
+
+  /* ── Typography ───────────────────────────────────────────────── */
+  h1 { font-size: 32px; line-height: 1.25; margin: 18px 0 8px; font-weight: 700; }
+  h2 { font-size: 24px; line-height: 1.35; margin: 36px 0 12px; font-weight: 700; }
+  h3 { font-size: 20px; line-height: 1.4; margin: 32px 0 10px; font-weight: 700; }
+  h4 { font-size: 18px; margin: 24px 0 8px; font-weight: 600; }
+  p  { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 28px; }
+  li { margin-bottom: 6px; }
+  ul ul, ol ul { margin-top: 4px; margin-bottom: 4px; }
+  a { color: #0966c2; }
+  blockquote {
+    border-left: 3px solid #ccc;
+    margin: 16px 0;
+    padding: 8px 16px;
+    color: #555;
+    background: #fafafa;
+  }
+  .subtitle { font-size: 18px; color: #555; margin: 0 0 24px; line-height: 1.5; }
+  img { max-width: 100%; height: auto; display: block; margin: 20px auto; border-radius: 4px; }
+  hr { border: none; border-top: 1px solid #e0e0e0; margin: 36px 0; }
+
+  /* ── Diff highlighting ────────────────────────────────────────── */
+  .diff-add {
+    background: #d4f8d4;
+    border-left: 4px solid #2ecc40;
+    padding: 14px 18px;
+    margin: 20px 0;
+    border-radius: 4px;
+  }
+  .diff-add p:last-child { margin-bottom: 0; }
+  .diff-add-inline {
+    background: #d4f8d4;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  .diff-label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #1e7e34;
+    background: #b7f5b7;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-bottom: 8px;
+  }
+  .results-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 15px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  }
+  .results-table th, .results-table td {
+    padding: 8px 12px;
+    border: 1px solid #b7f5b7;
+    text-align: left;
+  }
+  .results-table th {
+    background: #b7f5b7;
+    font-weight: 600;
+    color: #1e7e34;
+  }
+  .results-table td { background: #eafcea; }
+  .fig-caption {
+    text-align: center;
+    font-size: 14px;
+    color: #666;
+    margin: -10px 0 20px;
+    font-style: italic;
+  }
+
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     HEADER
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="header-bar">
+  <a href="https://blog.dileeplearning.com/">Artificial General Ideas</a>
+</div>
+
+<div class="container">
+
+<div class="post-meta">
+  <a href="https://substack.com/@dileeplearning">DILEEP GEORGE</a> &middot; SEP 14, 2024
+</div>
+
+<h1>A critique of successor representations as a model of learning in the hippocampus</h1>
+
+<p class="subtitle">Why SR is not a model of learning cognitive maps or place cells
+in the hippocampus.</p>
+
+<p>Successor representations (SR) is a popular, influential, and often cited model
+of place cells in the hippocampus. However, it is also one of the frequently
+misunderstood ideas — it is often attributed capabilities that it doesn't have and
+cited in contexts where it should not be cited. Multiple review papers state
+that "place cell firing patterns can be simulated by a column of SR", which gives
+the impression that SR is a model of place cell learning.</p>
+
+<p>In every talk I have given there have been questions about SR, often
+misunderstanding what the model actually does, often using phrases like "predicting future
+states", "not representing space, only relationships", "encodes a state in terms
+of future states", "predictive map", etc. These are statements that can be made
+<a href="https://www.science.org/doi/10.1126/sciadv.adm8470">about our CSCG model too</a>,
+but these models are entirely different with very different capabilities. This
+blog is an attempt to document my take that is often expressed too succinctly
+in the discussion sections of research papers.</p>
+
+<p>I will make the following points:</p>
+<ul>
+  <li>Successor representations (SR) is NOT a model of place cell learning in the
+  hippocampus. SR cannot explain how place fields are formed, or how hippocampus forms
+  latent variables or 'cognitive maps'.</li>
+  <li>Additional properties ascribed to SR, like "predictive states", and ability to
+  form hierarchies, are properties of simple Markov chains, and not a property of
+  SR itself. As a predictor of next states SR is worse than the underlying Markov
+  chain.</li>
+  <li>Some experiments in humans and animals report evidence for SR. On closer
+  inspection, these experiments might NOT be providing strong evidence for SR, and are
+  more likely evidence for model-based planning using a model like CSCG.</li>
+</ul>
+
+<p>Caveat: While I quote papers to make the point, I don't intend to say that these
+papers or experiments themselves are misleading. My intention is to counteract
+some misunderstandings that have formed over the years due to imprecise citation
+patterns. Our understanding has also improved over time, and that affords us
+more precision.</p>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 1: Why SR is not a model of learning cognitive maps
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Why SR is not a model of learning cognitive maps or place cells in the hippocampus.</h2>
+
+<p>Let us start with the following figure from this excellent paper
+<a href="https://www.jneurosci.org/content/38/33/7193">'The successor representation, its computational logic'</a>,
+from Sam Gershman. On the right is the SR matrix M(states(t), states(t+1)).
+The figure is showing that if you reshape a column of this matrix, you get a
+place field.</p>
+
+<p>If learning is what populates the SR matrix, and the columns of the SR matrix
+corresponds to place cells, doesn't SR explain how place cells are learned? To the
+surprise of many, the answer is <strong>No!</strong></p>
+
+<p>To see this, we need to look at what was the input to SR learning is. The input
+to SR at times t, t+1, …, are the vectors states(t), states(t+1). You can think
+of each input as a column vector. Let's take the input to SR at time instant t,
+states(t), and reshape it, just like we reshaped a column of the SR matrix. If
+you do that, you get the following:</p>
+
+<p>And what is that? It is a perfect place field! So, the input to the SR, at every
+time step, is a perfect place field that precisely indicates where the
+agent/animal currently is!</p>
+
+<p>SR cannot be an explanation for place field learning because the inputs to SR
+are perfect place fields already. (It could, if anything at all, be a theory of
+how place fields can distort given perfect place fields). How did the perfect
+place field get formed in the first place? SR offers no explanation for it.</p>
+
+<!-- ── DIFF: replication of the input requirement ────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — empirical confirmation</span>
+  <p>We directly tested this claim. In our 10&times;10 arena with 10 observation
+  types (10&times; aliasing — 10 states map to each observation), a standard
+  <strong>observation-space SR</strong> operates on a 10&times;10 matrix —
+  fundamentally unable to distinguish the 100 true locations.</p>
+  <p>Result: the observation-space SR agent reaches the goal in <strong>0.0%</strong>
+  of 750 barrier episodes (200-step timeout every time), versus 100% for the
+  model-based agent that has access to true state indices.
+  Even in an open arena with no barriers, the obs-SR agent only reaches the goal
+  from &sim;17% of starting positions (only those starting on or immediately adjacent to the goal).</p>
+  <p>Crucially, when the CSCG+SR agent is allowed to <strong>explore the modified
+  arena and discover barriers by bumping into them</strong> — the way a real rat
+  would — it incrementally updates its cognitive map (clone-space transition
+  model) through prediction errors, then recomputes SR via replay.
+  <strong>CSCG+SR (explore) improves across trials</strong>, matching the
+  characteristic learning curve seen in rodent behavioural data.
+  This agent uses NO oracle information: it localizes via CSCG belief-state
+  filtering (hippocampal place cells) and discovers barriers through
+  proprioceptive bounce signals (prediction errors), not from a given wall list.</p>
+  <p>Meanwhile, observation-space SR recomputed with full barrier information
+  still scores 0% — because 10&times; observation aliasing dilutes the barrier
+  signal, making it impossible to represent which specific cells are blocked.</p>
+  <img src="cothi_sr_matrices.png" alt="SR matrices comparison: 10×10 obs-SR vs 100×100 ground truth vs ~200×200 CSCG-SR">
+  <p class="fig-caption">Left: Obs-space SR (10&times;10 — lossy). Center: Ground-truth adjacency SR (100&times;100). Right: CSCG-inferred latent SR (&sim;200&times;200) — recovers much of the structure.</p>
+</div>
+
+<p>Note that this is very different from CSCG — the inputs to CSCG are not
+locations, but sensory inputs that do not directly correspond to locations. In CSCG,
+location and head direction are induced as latent variables, whereas SR requires
+locations to be directly sensed.</p>
+
+<!-- ── DIFF: CSCG latent recovery ────────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — CSCG latent state recovery</span>
+  <p>Our CSCG with 20 clones per observation type (200 total clone states) was
+  trained on random-walk trajectories in the open arena. After 200 EM + 50 Viterbi
+  iterations, <strong>100 out of 100 unique locations</strong> were assigned
+  distinct clone states — a perfect bijection from purely sensory (aliased)
+  input, with no location index ever provided.</p>
+  <p>This quantitatively confirms that CSCG induces latent location
+  variables from sensory input, whereas SR requires them as given.
+  With this perfect state recovery, the clone transition matrix is isomorphic to
+  the true state-space transitions, enabling SR to operate on a spatially
+  meaningful representation.</p>
+</div>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 2: Many properties are just Markov chain properties
+     ═══════════════════════════════════════════════════════════════════ -->
+<h3>Many properties attributed to SR are just the properties of the adjacency matrix/Markov chain.</h3>
+
+<p>If at every time instant what you sense is the unique location, then you can
+directly set up a Markov chain over those locations and obtain the same properties
+ascribed to SRs. Learning an adjacency matrix — which location is adjacent to
+which location — is not a hard problem. It is just a Markov chain, you can just
+populate it with the transitions that are observed. The edges of that Markov
+graph can be annotated by the actions, and this Markov graph has all the info needed
+for navigation.</p>
+
+<p>Note that any of the generic statements made about SR — 'predictive
+representation', 'encodes temporal relationships', 'columns represent place cells' — are
+true of this simple Markov chain too. In fact many of the properties attributed to
+SR — formation of hierarchies using community structure, for example — are just
+the properties of the underlying Markov chain without any SR. Navigation
+computations on the Markov graph are not expensive at all — you can use the Dijkstra
+algorithm for computing the shortest path, for example.</p>
+
+<p>As another example, the fact that nodes in a neighborhood community of a graph
+cluster together when visualized in multi dimensional scaling is not a property
+of the SR — it is the property of the underlying Markov chain, as shown in the
+figure above.</p>
+
+<p><strong>SR is not modeling long-term temporal dependencies and is less predictive than
+the Markov chain:</strong> You can think of SR as taking in the adjacency Markov chain, and then
+'blurring' it. It introduces more edges to the graph — a node is now not just connected
+to its neighbor, but also the neighbor's neighbor, and neighbor's neighbor's
+neighbor. Sometimes this is confused with modeling 'long-term' temporal
+dependencies, but it is actually not. The addition of the extra connections did not
+increase the predictive power — it decreased it. This is because, after the blurring,
+a node cannot distinguish between its neighbor and neighbor's neighbor. The
+Markov chain representing the adjacency matrix is a better 'predictive map' than
+SR. The SR matrix will perform worse in prediction compared to the simpler Markov
+chain.</p>
+
+<!-- ── DIFF: blurring measured ────────────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — SR blurring visualized</span>
+  <p>We visualized this blurring effect directly. With &gamma;=0.95, the SR
+  matrix spreads values across many states. In the obs-space SR (10&times;10),
+  this blurring is extreme: every observation "sees" every other observation
+  because the aliasing collapses 10 true states per observation. As a result,
+  the value function derived from obs-SR is nearly flat — no gradient toward
+  the goal is available.</p>
+  <img src="cothi_value_functions.png" alt="Value functions: inverted BFS distance vs obs-SR value vs CSCG-SR value on grid">
+  <p class="fig-caption">Left: Inverted BFS distance (ground truth — high at goal, low far away, clear gradient). Center: Obs-SR value (nearly uniform — same value for every cell sharing an observation, no usable gradient). Right: CSCG+SR value (recovered gradient toward goal, noisier than ground truth but spatially structured).</p>
+</div>
+
+<p><strong>Eigen vectors and grid cells?:</strong> Another property attributed to SR is that
+its eigenvectors look like grid cells. But this is also just the property of the
+neighborhood graph, no SR needed. Shown below are first 20 eigenvectors of the
+graph of a room with a 'hole' in it. (Here's a simple argument on why this grid cell
+idea does not make intuitive sense to me: To derive this representation, it
+requires representing the 'hole' in as much detail as the walkable areas of the room.)</p>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 3: Questioning the ethology of SR assumption
+     ═══════════════════════════════════════════════════════════════════ -->
+<h3>Questioning the ethology of SR assumption.</h3>
+
+<p>SR is motivated using computational complexity of an RL task — maximizing
+rewards when multiple states in the environment lead to rewards. For example, if
+different amounts of cheese are available at different locations in the environment
+as in the figure below (from
+<a href="https://www.nature.com/articles/nn.4650">Stachenfeld et al 2016</a>),
+the RL problem is about having an optimal policy to obtain the rewards.</p>
+
+<p>Here are my questions on this:</p>
+<ol>
+  <li>Is there any evidence that animals can optimize behavior in such settings where
+  there are multiple rewards?</li>
+  <li>How are these rewarding states even communicated to the animal when the animal
+  cannot see all the states? Seems like a hard problem.</li>
+</ol>
+
+<p>Basically, I'm questioning the computational optimization premise behind SR —
+I'm asking whether animals/humans actually solve the RL problem that is taken as
+the assumption for motivating SR.</p>
+
+<p>Navigating to a single goal location, or even chaining a couple of them, is not
+computationally inefficient in a model-based setting, but SR assumes that this
+is not sufficient and that the RL problem needs to be solved in the more general
+setting, the ethology of which seems questionable to me.</p>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 4: What about evidence for SR in humans?
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>What about evidence for SR in humans?</h2>
+
+<p>The paper below
+(<a href="https://gershmanlab.com/pubs/Momennejad17.pdf">Mommenejad et al 2017</a>)
+is often cited as evidence for SR in humans. It is definitely a very impressive
+and fascinating behavioral experiment in humans, but on closely reading the
+paper I am left with the impression that the paper is actually providing strong
+evidence for model-based reasoning in humans, and providing only weak support for
+SR.</p>
+
+<p>Let's look at Fig 5 of the paper, which provides the human experimental data
+overlayed on predictions from "Model-based", and "SR", for two tasks, let's just
+call them "gray" and "red" for now. The gray and red bars in these plots are the
+theoretical predictions, the little dots with error bars are what is observed
+from humans. I have annotated the plot to make this easy to see.</p>
+
+<p>The impression these plots give me is that 1) Model-based reasoning ("pure MB")
+is a pretty good fit to what is actually observed in humans, and 2) Successor
+Representations ("pure SR") is a bad fit for what is observed in humans.
+"Pure MB" — It is such a close fit, and SR is not predictive at all of how
+humans behave for the "red" condition. In fact, this plot seems to provide strong
+evidence <em>against</em> SR.</p>
+
+<p>But that is not what the paper concluded. Here is the entire figure 5.</p>
+
+<p>The paper utilizes the minor discrepancy between Pure-MB performance and human
+performance to argue for a hybrid model that <em>post-hoc</em> combines SR with MB,
+without actually giving a method for how this combination would be achieved by an
+animal. This post-hoc hybrid SR-MB is then what is cited as evidence for SR in humans.</p>
+
+<p>The hybrid SR-MB does not make sense to me. The MB method has all the
+information to outperform SR in both the gray and red conditions. The motivation for SR
+rests on the idea that the MB computations are expensive, as described in the
+introduction of the paper.</p>
+
+<p>However, running an SR-MB combination used in the paper (a linear combination of
+SR and MB) defeats the efficiency argument — SR-MB combination requires running
+both SR and MB, which is more expensive than running MB alone. The paper says
+there are other ways to combine them, but what was used for the fit was a linear
+combination that doesn't make computational or ethological sense.</p>
+
+<h4>Latent-state formation could be an alternative explanation:</h4>
+
+<p>Could there be another explanation for the minor discrepancy between MB
+performance and the reported human performance? I think so. Interestingly, the
+alternative explanation is based on the idea of latent variables.</p>
+
+<p>Consider the 'red' task, 'transition revaluation':</p>
+<ul>
+  <li>Humans are first trained to memorize two 3-step sequences.
+    <ul>
+      <li>Seq1: 1→2→3→Reward1,</li>
+      <li>Seq2: 4→5→6→Reward2</li>
+    </ul>
+  </li>
+  <li>After they learn seq1 and seq2, they are trained with two two-step sequences.
+    <ul>
+      <li>Seq3: 2 → 6 → Reward2</li>
+      <li>Seq4: 5 → 3 → Reward1</li>
+    </ul>
+  </li>
+</ul>
+
+<p>Now, here's the crux: How would humans interpret the second set of training
+sequences? What mental model do they build after the training is complete?</p>
+
+<p>In the paper's interpretation, the participants will learn Model-1 at the end of
+the first batch of training that exposed them to seq1 &amp; seq2. And according to
+the paper, the participants will consider the second set of sequences (seq3 &amp;
+seq4) as edits of Model-1, transition-revaluation, leading to the participants to
+change their mental model to the highlighted Model-2 in the figure above. The
+blue arrows are the edits.</p>
+
+<p>But that is not the only interpretation humans can make. Here is another
+interpretation.</p>
+<ul>
+  <li>If the sequence starts at 1, then the next steps are 2→3→ Reward1. But if the
+  sequence starts at 2, with no preceding context then the next steps are 6→Reward 2.</li>
+</ul>
+
+<p>Interestingly, SR has no mechanism to represent such a contingency, but humans
+and animals actually can! Also, it is trivial to represent this in CSCG, as shown
+below:</p>
+
+<p>Without additional information or constraints, there is really not much to
+select between these two interpretations. Some humans might modify the existing Model
+1 and treat this as transition-revaluation, but some other humans might think
+of it as a new set of latent variables.</p>
+
+<p>I think this ambiguity in the task design is a potential alternative explanation
+for the observed phenomena. The observations in that paper raise interesting
+questions given what we now know about the ability of hippocampus to create latent
+variables.</p>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 5: What about successor representations in animals?
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>What about successor representations in animals?</h2>
+
+<p><a href="https://www.sciencedirect.com/science/article/pii/S0960982222010958">Cothi et al</a>
+did an ingenious experiment on both rats and humans to test for navigation
+under changing environments. The experiment is extremely interesting, and I highly
+recommend reading the paper. In my reading of the paper, the performance of the
+agent, in terms of how well it achieves the task, seems to best explained by
+model-based planning, not SR, but that is not the impression you'd get if you just
+scan the abstract.</p>
+
+<p>The experiment tested the ability of rats and humans to navigate an environment
+and reach a goal that was initially trained in an open arena, but then tested in
+25 different maze configurations that removed blocks to create barriers. The
+goal location remained the same. Each configuration was tested for 10 trials.</p>
+
+<!-- ── DIFF: exact replication of the experiment ─────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — exact experimental setup</span>
+  <p>We replicated this experiment exactly, using the <strong>25 barrier
+  configurations extracted from the paper's original
+  <code>mazes.mat</code></strong> (from the
+  <a href="https://github.com/jbakermans/state-space-composition">companion GitHub repo</a>).
+  Our arena is a 10&times;10 grid with 10 observation types (each observation
+  shared by 10 states), goal at state&nbsp;33 (row&nbsp;3, col&nbsp;3,
+  MATLAB state 34). Each of the 25 configs specifies a set of blocked
+  cells (applied as self-loop walls) and 10 starting positions.</p>
+  <img src="cothi_arena.png" alt="10×10 arena with goal at state 33">
+  <p class="fig-caption">Our 10&times;10 arena. Goal at state 33 (red star). Colors indicate the 10 repeating observation types — each type maps to 10 distinct true locations.</p>
+  <img src="cothi_25_barrier_configs.png" alt="All 25 barrier configurations from de Cothi et al. 2022">
+  <p class="fig-caption">All 25 barrier configurations from mazes.mat. Dark cells = blocked.
+  Blue dots = start positions. Red star = goal (always state 33, never blocked).</p>
+</div>
+
+<p>Shown below are the performance graphs, for rats, humans and RL agents.</p>
+
+<p>Here are my observations from the above graphs:</p>
+<ol>
+  <li>Panel A: SR significantly under-performs compared to humans, very much so in the
+  early parts of the trial.</li>
+  <li>Panel A: Human performance is very close to model-based reasoning "MB".</li>
+  <li>Panel B: SR under-performs rats, and catches up to rat performance only by trial 10.</li>
+  <li>Panel B: Ideal MB performance is better than that of rats performance.</li>
+</ol>
+
+<!-- ── DIFF: our quantitative results ────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — quantitative results</span>
+  <p>Our replication across 3 seeds &times; 25 configs &times; 10 trials
+  (750 episodes per agent):</p>
+  <table class="results-table">
+    <tr>
+      <th>Agent</th>
+      <th>Avg Steps</th>
+      <th>Goal Reach %</th>
+      <th>Timeout %</th>
+    </tr>
+    <tr>
+      <td>Model-based (BFS on true graph)</td>
+      <td><strong>12.6</strong></td>
+      <td><strong>100.0%</strong></td>
+      <td>0.0%</td>
+    </tr>
+    <tr>
+      <td>SR (observation-space, 10&times;10)</td>
+      <td>200.0</td>
+      <td><strong>0.0%</strong></td>
+      <td>100.0%</td>
+    </tr>
+    <tr>
+      <td>CSCG + Value Iteration</td>
+      <td>162.6</td>
+      <td>20.4%</td>
+      <td>79.6%</td>
+    </tr>
+    <tr>
+      <td>CSCG + SR (on latent states, stale model)</td>
+      <td>189.4</td>
+      <td>5.7%</td>
+      <td>94.3%</td>
+    </tr>
+    <tr>
+      <td><strong>CSCG + SR (explore — learns from experience)</strong></td>
+      <td><strong>46.0</strong></td>
+      <td><strong>98.4%</strong></td>
+      <td><strong>1.6%</strong></td>
+    </tr>
+  </table>
+  <p><strong>Key findings:</strong></p>
+  <ul>
+    <li>The <strong>model-based agent reaches the goal 100% of the time</strong>,
+    averaging 12.6 steps — confirming that BFS on the true graph solves
+    every barrier configuration immediately with no learning.</li>
+    <li>The <strong>observation-space SR never reaches the goal</strong> (0.0%,
+    all 750 episodes timeout), even when recomputed with barrier info.
+    Its 10&times;10 SR matrix cannot represent 100 distinct locations.</li>
+    <li><strong>CSCG + SR (explore) improves across trials</strong> as it
+    discovers barriers through experience. The agent uses CSCG belief-state
+    filtering for localization (hippocampal place cells) and detects new
+    walls via proprioceptive bounce signals (prediction errors). Each
+    discovery triggers a local cognitive-map update and SR recomputation
+    (hippocampal replay).</li>
+    <li>CSCG agents with stale models (trained on the open arena, with no
+    experience in the barrier arena) succeed only 6&ndash;20% of the time,
+    confirming that cognitive maps must be updated for environment changes
+    &mdash; and the explore agent does this in a neuroscience-faithful way.</li>
+  </ul>
+  <img src="cothi_blog_performance.png" alt="Learning curves and grouped bar chart comparison">
+  <p class="fig-caption">Left: Steps to goal across 10 trials (lower is better). Right: Grouped bars — hatched = open arena, solid = with barriers — for each agent. MB (blue) solves every configuration; obs-SR (orange) times out every time.</p>
+</div>
+
+<p>However, the paper seems to emphasize some aspect of the trajectories taken by
+the agents to find that SR is most similar — see plots below. However, even there,
+in the first 5 trials model-based planning is more similar to humans and rats
+compared to SR.</p>
+
+<p>The paper argues that as the agent gains more experience, it makes sense that it
+switches to SR because it is less computationally demanding. But, it is just as
+easy to cache the plans that were derived earlier, and replan only when the
+actions of that plan are not executable. In the MB implementation in the paper,
+the agent replans after every step — but replanning could be done
+intermittently. Many of these variations of model-based planning could make it even more of a
+better fit for the observed behavior.</p>
+
+<p>Also, some of the reasonings given in favor of SR in the paper seem to be
+incorrect. When the environment changes, the SR's biases are likely to hurt rather
+than help. In fact, this is reflected in the performance — SR significantly
+underperforms MB, and the animal/human in the first 5 trials.</p>
+
+<!-- ── DIFF: per-config breakdown ────────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — per-configuration breakdown</span>
+  <p>To show this is not an artifact of averaging, here are results
+  broken down by all 25 barrier configurations:</p>
+  <img src="cothi_per_config.png" alt="Per-configuration performance line chart">
+  <p class="fig-caption">Line chart: average steps to goal for each of the 25 barrier configurations, sorted left-to-right by model-based optimal difficulty. MB (blue) stays near the bottom; obs-SR (orange) is pinned at 200 (timeout) for every config.</p>
+</div>
+
+<p>What could be the reason for humans and animals under-performing the ideal
+model-based planning? My guess: <strong>partial observability of the environments.</strong>
+Humans and animals in the experiment received visual sensory inputs, not
+location indices as inputs. The simulated ideal models received actual location indices
+as inputs! Therefore it should not be surprising that humans and animals
+under-perform this ideal model.</p>
+
+<!-- ── DIFF: the core insight ────────────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — the core insight quantified</span>
+  <p>We can make this argument precise. In our simulation,
+  the <strong>observation-space SR receives aliased observations</strong>
+  (10 types for 100 states) — analogous to partial observability —
+  and <strong>fails completely</strong> (0% goal reach).</p>
+  <p>Meanwhile, the observation-space SR in de Cothi et al.'s original simulation
+  received <strong>unique location indices</strong> (perfect place fields) as input,
+  a luxury that real animals don't have. Without this luxury,
+  SR is useless.</p>
+
+</div>
+
+<p>This brings up another argument why these experiments should be considered as
+evidence <em>against</em> SR: The SR model, which receives ideal location-indices as inputs, is
+under-performing rats that receive only visual sensory inputs!</p>
+
+<p>It is clear that this paper raises a lot of interesting questions with an
+ingenious set of experiments, and I hope there will be more follow up studies. My
+overall take is that the experiments are not showing strong evidence for SR, but
+showing evidence for model-based planning.</p>
+
+<!-- ── DIFF: environment verification ────────────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — environment verification</span>
+  <p>To ensure our replication is faithful, we verified every component:</p>
+  <ul>
+    <li>100 states &times; 4 actions with correct adjacency;</li>
+    <li>10 observation types, each covering exactly 10 states;</li>
+    <li>Goal state&nbsp;33 (MATLAB state 34) is never blocked in any of the 25 configs;</li>
+    <li>All 25 configs have exactly 10 start positions (values 1–10 in <code>mazes.mat</code>);</li>
+    <li>MB BFS returns Manhattan-optimal paths for all 99 non-goal states;</li>
+    <li>CSCG trained from scratch recovers 100/100 unique states from aliased input (with 200 EM iterations);</li>
+    <li>13/13 unit-level validation checks passed.</li>
+  </ul>
+
+</div>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 6: Conclusion
+     ═══════════════════════════════════════════════════════════════════ -->
+<h2>Conclusion</h2>
+
+<p>I hope I have provided sufficient arguments and evidence for the following:</p>
+
+<ul>
+  <li>Successor representations (SR) is NOT a model of place cell learning in the
+  hippocampus. SR cannot explain how place fields are formed.</li>
+  <li>Additional properties ascribed to SR, like "predictive states", and ability to
+  form hierarchies, are properties of simple Markov chains, and not a property of
+  SR itself.</li>
+  <li>The experiments in humans and animals that report evidence for SR might NOT be
+  providing strong evidence for SR, and are more likely evidence for model-based
+  planning.</li>
+</ul>
+
+<!-- ── DIFF: summary of replication evidence ─────────────────────── -->
+<div class="diff-add">
+  <span class="diff-label">Replication — summary of empirical evidence</span>
+  <p>The replication of the de&nbsp;Cothi&nbsp;et&nbsp;al.&nbsp;(2022)
+  experiment provides empirical support for all three conclusions:</p>
+  <ol>
+    <li><strong>SR requires unique location inputs.</strong> An observation-space SR
+    operating on aliased sensory input (10 types for 100 states) scores
+    <strong>0% goal reach</strong> across 750 barrier episodes — even when
+    recomputed with barrier info. The 10&times;10 SR matrix is fundamentally
+    incapable of representing the 100-state environment.</li>
+    <li><strong>CSCG recovers locations and enables SR.</strong> From the same aliased
+    observations, CSCG induces 100/100 unique latent states (a perfect bijection).
+    When the agent <strong>discovers barriers through experience</strong>,
+    <strong>CSCG+SR (explore) improves across trials</strong>
+    &mdash; matching the learning curves seen in rodent data.
+    The agent uses CSCG belief-state filtering for localization
+    (hippocampal place cells) and detects barriers via proprioceptive
+    bounce signals (prediction errors), with no oracle access.</li>
+    <li><strong>Without updating the model, even CSCG+SR fails.</strong>
+    CSCG+SR with a stale (open-arena) model reaches the goal only ~6% of
+    the time, confirming that cognitive maps must be updated for environment
+    changes. BFS (model-based) on the true graph achieves 100% reach with
+    12.6 mean steps.</li>
+  </ol>
+  <p>All code and figures:
+  <code>cscg_sr_cothi.py</code>, <code>plot_cothi_blog.py</code>,
+  branch <code>cscg-sr-blog</code>.</p>
+</div>
+
+<hr>
+
+<h2>Acknowledgement</h2>
+<p>Thanks to
+<a href="https://scholar.google.com/citations?user=SFjDQk8AAAAJ&hl=en">Miguel Lázaro-Gredilla</a>
+for feedback on early drafts of this blog.</p>
+
+<hr>
+
+<p style="text-align:center; color:#999; font-size:13px; margin: 40px 0 60px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;">
+  Original blog: <a href="https://blog.dileeplearning.com/p/a-critique-of-successor-representations" style="color:#999;">blog.dileeplearning.com</a>
+  &middot; Annotations generated from <code>cscg-sr-blog</code> branch
+  &middot; &copy; 2026
+</p>
+
+</div><!-- .container -->
+</body>
+</html>
