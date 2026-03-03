@@ -778,6 +778,7 @@ class CSCGSRExplorerAgent:
         stuck = 0              # consecutive steps at same cell
         prev = -1
         found_step = 0         # step goal was first reached (0 = not yet)
+        continue_after = getattr(self, '_continue_after_goal', False)
 
         for step in range(1, max_steps + 1):
             # ── new-state bookkeeping ──
@@ -787,11 +788,15 @@ class CSCGSRExplorerAgent:
                 stuck += 1
             prev = state
 
-            # ── post-goal continued exploration ──
-            # After reaching the goal, random-walk for the remaining
-            # steps to discover more barriers (analogous to paper's
-            # post-trial trajectory that updates agent models).
+            # ── post-goal continued exploration (MB only) ──
+            # Model-based agents deliberately update their world model
+            # after reaching the goal — random-walk to discover barriers
+            # for future trials. SR agents learn passively through
+            # experience and return immediately (matching biology:
+            # habitual system doesn't do deliberate post-trial replay).
             if found_step > 0:
+                if not continue_after:
+                    break                # SR: stop immediately
                 a = rng.randint(4)
                 ns = env.adj[state][a]
                 if ns == state:
@@ -827,8 +832,14 @@ class CSCGSRExplorerAgent:
                     # ε-random: uniform over non-bumped actions
                     ok = [d for d in range(4) if d not in bumped_a]
                     a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
+                elif b.max() < 0.10:
+                    # Very uncertain (10+ candidate clones) → pure random.
+                    # Q values averaged over 10+ locations are noise;
+                    # random steps give diverse observations to localise.
+                    ok = [d for d in range(4) if d not in bumped_a]
+                    a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
                 elif b.max() < 0.33:
-                    # Uncertain belief → softmax exploration (Q-guided,
+                    # Moderately uncertain → softmax exploration (Q-guided,
                     # but not fully greedy).  Temperature ∝ uncertainty.
                     tau = max(0.3, 2.0 * (1.0 - b.max()))
                     q_safe = q.copy()
@@ -889,6 +900,7 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self.T = self.T_open.copy()
         self.Q = np.zeros((self.n_cs, 4))
         self._barrier_alpha = 8.0   # Dijkstra barrier-avoidance weight
+        self._continue_after_goal = True   # MB: deliberate post-trial model update
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs
