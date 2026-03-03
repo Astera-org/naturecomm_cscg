@@ -671,6 +671,13 @@ class CSCGSRExplorerAgent:
     discovers barriers from proprioceptive feedback only.
     """
 
+    # Tuning knobs (class-level defaults, overridable per-instance)
+    _softmax_thresh = 0.33   # b.max() below this → softmax exploration
+    _softmax_early  = 0.55   # higher threshold for early trials (T1–T3)
+    _loop_window    = 20     # steps to look back for loop detection
+    _loop_max_uniq  = 5      # unique states threshold for loop
+    _rw_steps       = 10     # random-walk escape duration
+
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
                  gamma: float = 0.95, epsilon: float = 0.25,
@@ -781,6 +788,11 @@ class CSCGSRExplorerAgent:
         raw = sim_seed * 100003 + start * 1009 + self._tc
         rng = np.random.RandomState(raw % (2**32))
 
+        # Adaptive softmax threshold: more exploratory when barrier
+        # knowledge is scarce (early trials), decays to baseline.
+        _eff_thresh = max(self._softmax_thresh,
+                          self._softmax_early - (self._softmax_early - self._softmax_thresh) * min(self._tc - 1, 3) / 3)
+
         state, obs = start, env.obs_map[start]
         bumped_a: set = set()  # actions that bumped at *current* state
         recent: list = []      # sliding window for loop detection
@@ -819,14 +831,14 @@ class CSCGSRExplorerAgent:
 
             # ── stuck / loop detection ──
             recent.append(state)
-            if len(recent) > 20:
+            if len(recent) > self._loop_window:
                 recent.pop(0)
             if stuck >= 4:               # stuck at one cell
                 self._reset_belief(obs)
                 stuck = 0               # keep bumped_a — avoid re-bumping
-            elif len(recent) >= 20 and len(set(recent)) <= 5 and rw == 0:
+            elif len(recent) >= self._loop_window and len(set(recent)) <= self._loop_max_uniq and rw == 0:
                 self._reset_belief(obs)
-                recent.clear(); rw = 10
+                recent.clear(); rw = self._rw_steps
 
             # ── action selection ──
             if rw > 0:
@@ -848,7 +860,7 @@ class CSCGSRExplorerAgent:
                     # random steps give diverse observations to localise.
                     ok = [d for d in range(4) if d not in bumped_a]
                     a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
-                elif b.max() < 0.33:
+                elif b.max() < _eff_thresh:
                     # Moderately uncertain → softmax exploration (Q-guided,
                     # but not fully greedy).  Temperature ∝ uncertainty.
                     tau = max(0.3, 2.0 * (1.0 - b.max()))
