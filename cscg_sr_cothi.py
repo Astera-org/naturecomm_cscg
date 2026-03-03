@@ -677,6 +677,7 @@ class CSCGSRExplorerAgent:
     _loop_window    = 20     # steps to look back for loop detection
     _loop_max_uniq  = 5      # unique states threshold for loop
     _rw_steps       = 10     # random-walk escape duration
+    _bump_cool      = 0.0    # belief softening after barrier bump (0 = off)
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
@@ -882,6 +883,14 @@ class CSCGSRExplorerAgent:
             ns = env.adj[state][a]
             if ns == state:                      # bounce (prediction error)
                 bumped_a.add(a)
+                # Bump cooling: a barrier surprise may indicate
+                # mislocalization — gently broaden the belief.
+                if self._bump_cool > 0:
+                    obs_uni = self._obs_mask(obs)
+                    obs_s = obs_uni.sum()
+                    if obs_s > 0:
+                        self.belief = ((1 - self._bump_cool) * self.belief
+                                       + self._bump_cool * obs_uni / obs_s)
                 if self._barrier_update(a):
                     self._recompute()   # instant replay — no deferral
             state, obs = ns, env.obs_map[ns]
@@ -928,6 +937,7 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self._barrier_alpha = 8.0   # Dijkstra barrier-avoidance weight
         self._continue_after_goal = True   # MB: deliberate post-trial model update
         self._barrier_decay = 0.05         # inter-trial T decay toward open model
+        self._bump_cool = 0.15             # belief softening after barrier bump
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs
