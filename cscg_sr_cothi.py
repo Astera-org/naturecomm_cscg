@@ -767,6 +767,16 @@ class CSCGSRExplorerAgent:
         """
         self._reset_belief(env.obs_map[start])
         self._tc += 1
+        # Inter-trial barrier decay: slight mix toward open-arena T
+        # prevents stale false barriers from accumulating.
+        decay = getattr(self, '_barrier_decay', 0.0)
+        if decay > 0 and self._tc > 1:
+            self.T = (1 - decay) * self.T + decay * self.T_open
+            for aa in range(4):
+                rs = self.T[aa].sum(1, keepdims=True)
+                rs[rs == 0] = 1
+                self.T[aa] /= rs
+            self._recompute()
         # Combine sim_seed, start pos, and trial counter into a uint32 RNG seed
         raw = sim_seed * 100003 + start * 1009 + self._tc
         rng = np.random.RandomState(raw % (2**32))
@@ -866,6 +876,10 @@ class CSCGSRExplorerAgent:
             self._predict_and_correct(a, obs)
             if state == env.goal_state:
                 found_step = step      # record success, keep exploring
+                # Goal recognition: the goal is a known landmark,
+                # so the agent knows exactly where it is.
+                self.belief = np.zeros(self.n_cs)
+                self.belief[self.goal_clone] = 1.0
 
         return found_step if found_step > 0 else max_steps + 1
 
@@ -901,6 +915,7 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self.Q = np.zeros((self.n_cs, 4))
         self._barrier_alpha = 8.0   # Dijkstra barrier-avoidance weight
         self._continue_after_goal = True   # MB: deliberate post-trial model update
+        self._barrier_decay = 0.05         # inter-trial T decay toward open model
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs
