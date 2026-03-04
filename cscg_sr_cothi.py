@@ -683,6 +683,9 @@ class CSCGSRExplorerAgent:
     _stale_window   = 0      # steps of stuck bmax before reset+rw (0 = off)
     _stale_rw       = 5      # rw length after stale detection
     _stale_bmax_range = (0.40, 0.60)  # only trigger when bmax in this range
+    _mstep_window   = 0      # multi-step re-filtering window (0 = off)
+    _mstep_interval = 0      # re-filter every N steps
+    _mstep_bmax_thresh = 0.65  # only re-filter when bmax < this
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
@@ -816,6 +819,9 @@ class CSCGSRExplorerAgent:
         continue_after = getattr(self, '_continue_after_goal', False)
         stale_count = 0        # consecutive steps with bmax stuck in range
         last_bmax = 0.0
+        obs_hist = [obs]           # observation history for multi-step filtering
+        act_hist = []              # action history for multi-step filtering
+        last_refilter = 0
 
         for step in range(1, max_steps + 1):
             # ── new-state bookkeeping ──
@@ -861,7 +867,36 @@ class CSCGSRExplorerAgent:
                     recent.clear()
                     rw = self._stale_rw
                     stale_count = 0
+                    obs_hist = [obs]; act_hist = []; last_refilter = step
             last_bmax = cur_bmax
+
+            # ── multi-step re-filtering ──
+            # When belief is uncertain, re-run the forward algorithm
+            # on a sliding window of recent (obs, action) pairs
+            # starting from a uniform prior.  This sharpens the
+            # posterior because it jointly considers multiple
+            # observation–transition steps rather than relying on
+            # the single-step Bayesian update alone.
+            if (self._mstep_window > 0 and self._mstep_interval > 0
+                and rw == 0 and step - last_refilter >= self._mstep_interval
+                and self.belief.max() < self._mstep_bmax_thresh):
+                w = self._mstep_window
+                obs_w = obs_hist[-w:] if len(obs_hist) > w else obs_hist
+                act_w = act_hist[-(w-1):] if len(act_hist) > (w-1) else act_hist
+                if len(obs_w) >= 2 and len(act_w) >= 1:
+                    b = self._obs_mask(obs_w[0])
+                    b = b / b.sum() if b.sum() > 0 else np.ones(self.n_cs) / self.n_cs
+                    for i in range(len(act_w)):
+                        b = (self.T[act_w[i]].T @ b) * self._obs_mask(obs_w[i + 1])
+                        bs = b.sum()
+                        if bs > 0:
+                            b /= bs
+                        else:
+                            b = self._obs_mask(obs_w[i + 1])
+                            b = b / b.sum() if b.sum() > 0 else np.ones(self.n_cs) / self.n_cs
+                    if b.max() > self.belief.max():
+                        self.belief = b
+                    last_refilter = step
 
             # ── stuck / loop detection ──
             recent.append(state)
@@ -870,9 +905,11 @@ class CSCGSRExplorerAgent:
             if stuck >= 4:               # stuck at one cell
                 self._reset_belief(obs)
                 stuck = 0               # keep bumped_a — avoid re-bumping
+                obs_hist = [obs]; act_hist = []; last_refilter = step
             elif len(recent) >= self._loop_window and len(set(recent)) <= self._loop_max_uniq and rw == 0:
                 self._reset_belief(obs)
                 recent.clear(); rw = rw_len
+                obs_hist = [obs]; act_hist = []; last_refilter = step
 
             # ── action selection ──
             if rw > 0:
@@ -927,6 +964,8 @@ class CSCGSRExplorerAgent:
                 if self._barrier_update(a):
                     self._recompute()   # instant replay — no deferral
             state, obs = ns, env.obs_map[ns]
+            act_hist.append(a)
+            obs_hist.append(obs)
             self._predict_and_correct(a, obs)
             if state == env.goal_state:
                 found_step = step      # record success, keep exploring
@@ -975,6 +1014,8 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self._uncertain_thresh = 0.05     # enter softmax Q earlier (b.max() ≥ 0.05)
         self._stale_window = 8            # detect stuck belief (bmax ~0.5 for 8 steps)
         self._stale_rw = 5                # short rw to relocate after stale detection
+        self._mstep_window = 8            # multi-step re-filtering window
+        self._mstep_interval = 1          # re-filter every step
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs
