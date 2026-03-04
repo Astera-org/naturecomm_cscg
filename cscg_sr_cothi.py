@@ -1,38 +1,8 @@
 #!/usr/bin/env python3
 """CSCG + Successor Representation — Cothi et al. 2022 replication.
 
-Reproduces the key experiment from de Cothi et al. (2022, Current Biology):
-  "Predictive maps in rats and humans for spatial navigation"
-  https://www.sciencedirect.com/science/article/pii/S0960982222010958
-
-and supports the critique from:
-  "A critique of successor representations"
-  https://blog.dileeplearning.com/p/a-critique-of-successor-representations
-
-The experiment:
-  1. Train agents in an open arena to navigate to a fixed goal.
-  2. Introduce barrier configurations (walls) and test over 10 trials.
-  3. Compare path efficiency across agents.
-
-Agents:
-  - Model-based (perfect knowledge): BFS shortest path on true graph
-  - SR (observation space): Standard SR on raw observation indices
-  - CSCG + VI: Learn environment with CSCG, plan with value iteration
-  - CSCG + SR: Learn environment with CSCG, compute SR on latent states
-
-Key insight (from the blog): SR in observation space requires perfect
-location inputs — which animals don't have. Running SR on CSCG's latent
-states is a principled alternative: CSCG recovers locations from sensory
-input, then SR operates on a meaningful state space.
-
-Expected outcome: Model-based > CSCG+VI ≈ CSCG+SR >> obs-SR, and the
-gap between perfect MB and CSCG agents mirrors what Cothi et al. observed
-between ideal MB and real rats/humans (explained by partial observability,
-not by SR).
-
-    python cscg_sr_cothi.py                           # Cothi 10×10 arena (default)
-    python cscg_sr_cothi.py --env cothi-10x10 --n-seeds 5
-    python cscg_sr_cothi.py --env room-6x8 --n-seeds 3 --trials 10
+Reproduces de Cothi et al. (2022, Current Biology) and supports the
+critique from blog.dileeplearning.com/p/a-critique-of-successor-representations.
 """
 from __future__ import annotations
 
@@ -87,14 +57,11 @@ def bfs_distances(adj: Dict[int, List[int]], goal: int,
     q: deque = deque([goal])
     while q:
         s = q.popleft()
-        for s2 in range(n_states):
-            if dist[s2] < 9999:
-                continue
-            for a in range(n_actions):
-                if adj[s2][a] == s:
+        for a in range(n_actions):
+            for s2 in range(n_states):
+                if dist[s2] >= 9999 and adj[s2][a] == s:
                     dist[s2] = dist[s] + 1
                     q.append(s2)
-                    break
     return dist
 
 
@@ -103,21 +70,7 @@ def bfs_distances(adj: Dict[int, List[int]], goal: int,
 # ════════════════════════════════════════════════════════════════════
 
 def make_cothi_arena():
-    """10×10 square arena matching de Cothi et al. (2022).
-
-    The paper used a square arena discretized into a 10×10 grid.
-    Rats navigated a physical arena; humans used a VR version.
-    Both MB and SR agents in the paper received perfect location
-    indices (100 unique states). For our CSCG experiment, we add
-    observation aliasing: 10 distinct obs types, each appearing
-    10 times, so CSCG must disambiguate.
-
-    Goal at state 33 (row 3, col 3 in 0-indexed / MATLAB state 34)
-    — matching the original paper's goal location.
-    """
-    # 10 obs types (0-9), each appearing 10 times.
-    # Layout designed so no two adjacent cells share an obs,
-    # but distant cells do — heavy aliasing for CSCG.
+    """10×10 arena with 10-way obs aliasing.  Goal at state 33."""
     room = np.array([
         [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
         [5, 6, 7, 8, 9, 0, 1, 2, 3, 4],
@@ -140,18 +93,7 @@ def _maze_mat_path() -> str:
 
 def _convert_maze_matrix(maze_matrix: np.ndarray, H: int = 10, W: int = 10
                          ) -> Tuple[set, Dict[int, int], set]:
-    """Convert a MATLAB maze matrix (10×10) to our wall format.
-
-    In the original code (map2allowed.m), cells with value -1 are blocked:
-    movement INTO a blocked cell from any direction is disallowed.
-    Positive integers 1–10 mark the start position for each trial.
-    Value 0 means an open (passable) cell.
-
-    Returns:
-        walls:   set of (state, action, neighbor_state) — movements to block
-        starts:  {trial_number(1-10): start_state_id}
-        blocked: set of state_ids that are impassable
-    """
+    """Convert MATLAB maze matrix to (walls, starts, blocked)."""
     blocked: set = set()
     starts: Dict[int, int] = {}
 
@@ -163,9 +105,6 @@ def _convert_maze_matrix(maze_matrix: np.ndarray, H: int = 10, W: int = 10
             elif val > 0:
                 starts[val] = r * W + c
 
-    # Convert blocked cells to wall triples.
-    # For each FREE cell, if an action would move into a blocked cell,
-    # add a wall triple so adj[s][a] = s (stay in place).
     walls: set = set()
     deltas = {0: (0, -1), 1: (0, 1), 2: (-1, 0), 3: (1, 0)}
     for r in range(H):
@@ -184,18 +123,7 @@ def _convert_maze_matrix(maze_matrix: np.ndarray, H: int = 10, W: int = 10
 
 
 def load_cothi_mazes() -> List[Tuple[set, Dict[int, int], set]]:
-    """Load the exact 25 barrier configurations from de Cothi et al. (2022).
-
-    Requires ``mazes.mat`` (925 bytes) from the original repo:
-    https://github.com/willdecothi/Predictive-maps-in-rats-and-humans
-
-    Each configuration is a 10×10 matrix where:
-      -1 = blocked cell (impassable)
-       0 = open cell
-      1–10 = start position for each of the 10 trials
-
-    Returns a list of 25 tuples: (walls, starts, blocked).
-    """
+    """Load 25 barrier configs from mazes.mat (de Cothi et al. 2022)."""
     import scipy.io
     mat_path = _maze_mat_path()
     if not os.path.exists(mat_path):
@@ -213,26 +141,17 @@ def load_cothi_mazes() -> List[Tuple[set, Dict[int, int], set]]:
 
 
 def generate_cothi_barrier_configs() -> List[set]:
-    """25 barrier configurations — walls only (for backward compat).
-
-    Loads the exact configs from ``mazes.mat`` and returns just the
-    wall sets (dropping start positions and blocked-cell sets).
-    """
+    """25 barrier configs — walls only (backward compat wrapper)."""
     return [walls for walls, _starts, _blocked in load_cothi_mazes()]
 
 
 def generate_barrier_configs(room: np.ndarray, n_configs: int = 10,
                              seed: int = 42) -> List[set]:
-    """Generate random barrier configurations for non-Cothi arenas.
-
-    Each config is a set of (state, action, neighbour) wall triples.
-    Barriers are random internal wall edges.
-    """
+    """Random barrier configs for non-Cothi arenas."""
     H, W = room.shape
     rng = np.random.RandomState(seed)
     configs = []
 
-    # Collect all possible interior wall edges (bidirectional)
     all_edges = []
     for r in range(H):
         for c in range(W):
@@ -282,14 +201,7 @@ class ModelBasedAgent:
 # ════════════════════════════════════════════════════════════════════
 
 class ObsSpaceSRAgent:
-    """SR computed directly on observation indices (the standard approach).
-
-    This is what neuroscience papers typically do: SR matrix M is n_obs × n_obs,
-    computed from the observation-level transition matrix.
-
-    Critique: observations are NOT unique locations, so the transition matrix
-    is a lossy approximation. SR inherits and amplifies this error.
-    """
+    """SR on raw observation indices (the standard, lossy approach)."""
 
     def __init__(self, env: GridEnv, goal: int, gamma: float = 0.95):
         self.env = env
@@ -297,42 +209,27 @@ class ObsSpaceSRAgent:
         self.gamma = gamma
         self.n_obs = env.n_obs
         self.name = "SR (obs-space)"
+        self._build_T_obs(env)
+        self.goal_obs = env.obs_map[goal]
 
-        # Build observation-level transition matrix from the true environment
-        # (this is actually generous — real SR wouldn't even have this)
+    def _build_T_obs(self, env):
+        """Build obs-level transition matrix and SR from environment."""
         T_obs = np.zeros((4, self.n_obs, self.n_obs))
         counts = np.zeros((4, self.n_obs, self.n_obs))
         for s in range(env.n_states):
             o = env.obs_map[s]
             for a in range(4):
-                nb = env.adj[s][a]
-                o_next = env.obs_map[nb]
-                counts[a, o, o_next] += 1
+                counts[a, o, env.obs_map[env.adj[s][a]]] += 1
         for a in range(4):
-            row_sums = counts[a].sum(axis=1, keepdims=True)
-            row_sums[row_sums == 0] = 1
-            T_obs[a] = counts[a] / row_sums
-
-        # Average transition over actions (uniform random policy for SR)
+            rs = counts[a].sum(axis=1, keepdims=True); rs[rs == 0] = 1
+            T_obs[a] = counts[a] / rs
         T_avg = T_obs.mean(axis=0)
-        # SR matrix: M = (I - γ T)^{-1}
-        self.M_sr = np.linalg.inv(np.eye(self.n_obs) - gamma * T_avg)
-        # Reward vector: 1 at goal observation
-        self.goal_obs = env.obs_map[goal]
+        self.M_sr = np.linalg.inv(np.eye(self.n_obs) - self.gamma * T_avg)
 
     def _sr_policy(self, obs: int) -> int:
-        """Pick action that maximizes expected SR value."""
-        # V = M @ w, where w is reward on goal obs
-        w = np.zeros(self.n_obs)
-        w[self.goal_obs] = 1.0
-        V = self.M_sr @ w  # value of each observation
-
-        # For each action, pick one that leads to highest-value next obs
-        # (using the true env adj — generous for SR)
-        best_a, best_v = 0, -np.inf
-        # We need the agent's current state for action evaluation,
-        # but obs-SR only sees observations. We approximate by averaging
-        # over all states with this observation.
+        """Greedy action under SR value."""
+        w = np.zeros(self.n_obs); w[self.goal_obs] = 1.0
+        V = self.M_sr @ w
         return int(np.argmax([V[self.env.obs_map[self.env.adj[self._state][a]]]
                               for a in range(4)]))
 
@@ -348,23 +245,9 @@ class ObsSpaceSRAgent:
         return max_steps
 
     def update_env(self, env: GridEnv):
-        """Recompute SR when environment changes (barriers added)."""
+        """Recompute SR for changed environment."""
         self.env = env
-        # Rebuild transition matrices
-        T_obs = np.zeros((4, self.n_obs, self.n_obs))
-        counts = np.zeros((4, self.n_obs, self.n_obs))
-        for s in range(env.n_states):
-            o = env.obs_map[s]
-            for a in range(4):
-                nb = env.adj[s][a]
-                o_next = env.obs_map[nb]
-                counts[a, o, o_next] += 1
-        for a in range(4):
-            row_sums = counts[a].sum(axis=1, keepdims=True)
-            row_sums[row_sums == 0] = 1
-            T_obs[a] = counts[a] / row_sums
-        T_avg = T_obs.mean(axis=0)
-        self.M_sr = np.linalg.inv(np.eye(self.n_obs) - self.gamma * T_avg)
+        self._build_T_obs(env)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -372,10 +255,7 @@ class ObsSpaceSRAgent:
 # ════════════════════════════════════════════════════════════════════
 
 def _viterbi_state_to_clone(chmm, x, a, state_seq, n_states):
-    """Viterbi-decode a CHMM and build state→clone mapping.
-
-    Returns (state_to_clone, n_unique, score).
-    """
+    """Viterbi-decode and build state→clone mapping."""
     from collections import Counter
     T_tr = chmm.T.transpose(0, 2, 1).astype(np.float64)
     log2_lik, fwd = forward_mp(T_tr, chmm.Pi_x.astype(np.float64),
@@ -401,18 +281,7 @@ def train_cscg(room: np.ndarray, env_kw: dict, n_clones_per_obs: int = 20,
                explore_steps: int = 10000, seed: int = 42,
                em_iters: int = 200, viterbi_iters: int = 50,
                pseudocount: float = 2e-3, n_restarts: int = 10):
-    """Train a CSCG on the environment via random walk.
-
-    Uses *n_restarts* random initialisations (default 10) and selects
-    the model that recovers the most unique clones (bijective states).
-    Among models with the same clone recovery, the one with the best
-    log-likelihood score is chosen.  Early-exits when a perfect
-    bijection (n_unique == n_states) is found.
-
-    Returns (chmm, env, state_to_clone) where state_to_clone maps
-    ground-truth state indices to their most-likely clone indices
-    (determined by Viterbi decoding of the training walk).
-    """
+    """Train CSCG via random walk.  Best-of-k restarts by clone recovery."""
     n_obs = int(room.max()) + 1
     env = GridEnv(room, goal_state=0, max_steps=999999, seed=seed, **env_kw)
     rng = np.random.RandomState(seed)
@@ -428,12 +297,11 @@ def train_cscg(room: np.ndarray, env_kw: dict, n_clones_per_obs: int = 20,
         state_seq.append(state)
 
     x = np.array(obs_seq, dtype=np.int64)
-    a = np.array(act_seq + [act_seq[-1]], dtype=np.int64)  # pad
-
+    a = np.array(act_seq + [act_seq[-1]], dtype=np.int64)
     n_clones_arr = np.ones(n_obs, dtype=np.int64) * n_clones_per_obs
     n_states = env.n_states
 
-    # Best-of-k restarts, selected by (n_unique DESC, score ASC)
+    # Best-of-k restarts
     best_chmm = None
     best_s2c: Dict[int, int] = {}
     best_n_unique, best_score = 0, float('inf')
@@ -450,7 +318,7 @@ def train_cscg(room: np.ndarray, env_kw: dict, n_clones_per_obs: int = 20,
         s2c, n_unique, score = _viterbi_state_to_clone(
             chmm, x, a, state_seq, n_states)
 
-        # Select: more unique clones > better score
+        # Select: most unique clones, then best score
         if (n_unique > best_n_unique or
                 (n_unique == best_n_unique and score < best_score)):
             best_chmm, best_s2c = chmm, s2c
@@ -472,7 +340,7 @@ def train_cscg(room: np.ndarray, env_kw: dict, n_clones_per_obs: int = 20,
 # ════════════════════════════════════════════════════════════════════
 
 class CSCGVIAgent:
-    """CSCG world model + value iteration for planning."""
+    """CSCG world model + value iteration."""
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  gamma: float = 0.95, vi_iters: int = 200):
@@ -489,12 +357,7 @@ class CSCGVIAgent:
         # Normalised transition
         T = chmm.T.astype(np.float64) + 1e-8
         self.T_norm = T / T.sum(axis=2, keepdims=True)
-
-        # Set goal: reward on the specific goal clone
-        self.w = np.zeros(self.n_cs)
-        self.w[goal_clone] = 1.0
-
-        # Value iteration
+        self.w = np.zeros(self.n_cs); self.w[goal_clone] = 1.0
         self.V = np.zeros(self.n_cs)
         self.Q = np.zeros((self.n_cs, 4))
         self._value_iteration()
@@ -561,17 +424,7 @@ class CSCGVIAgent:
 # ════════════════════════════════════════════════════════════════════
 
 class CSCGSRMatrixAgent:
-    """CSCG world model + SR matrix on learned latent states.
-
-    This is the key demonstration: compute the SR matrix M = (I - γT)^{-1}
-    on CSCG's latent clone states. This is meaningful because CSCG has
-    already disambiguated observations into unique latent locations.
-
-    Unlike obs-space SR which operates on aliased observations,
-    CSCG-SR operates on a (approximately) de-aliased state space.
-
-    The value for planning is then V = M @ w, where w marks the goal clones.
-    """
+    """CSCG + SR matrix M = (I - γT)^{-1} on latent clone states."""
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  gamma: float = 0.95):
@@ -584,28 +437,14 @@ class CSCGSRMatrixAgent:
         self.n_cs = int(chmm.n_clones.sum())
         self.state_loc = np.hstack(([0], chmm.n_clones)).cumsum()
 
-        # Normalised transition (action-averaged for SR)
         T = chmm.T.astype(np.float64) + 1e-8
         T_norm = T / T.sum(axis=2, keepdims=True)
         self.T_norm = T_norm
-        # Average over actions for SR (uniform random walk policy)
-        T_avg = T_norm.mean(axis=0)  # (n_cs, n_cs)
-
-        # SR matrix: M = (I - γ T_avg)^{-1}
+        T_avg = T_norm.mean(axis=0)
         self.M_sr = np.linalg.inv(np.eye(self.n_cs) - gamma * T_avg)
-
-        # Goal reward vector: reward on the specific goal clone
-        self.w = np.zeros(self.n_cs)
-        self.w[goal_clone] = 1.0
-
-        # V = M @ w  (SR-based value function)
+        self.w = np.zeros(self.n_cs); self.w[goal_clone] = 1.0
         self.V_sr = self.M_sr @ self.w
-
-        # For action selection, we need per-action Q values:
-        # Q(s, a) = T(s,a,:) @ (w + γ V_sr)  — one-step lookahead using SR values
         self.Q = np.einsum("asj,j->sa", T_norm, self.w + gamma * self.V_sr)
-
-        # Belief
         self.belief = np.ones(self.n_cs) / self.n_cs
 
     def _obs_mask(self, obs: int) -> np.ndarray:
@@ -643,11 +482,7 @@ class CSCGSRMatrixAgent:
         return max_steps
 
     def update_goal(self, goal_clone: int):
-        """Recompute SR values for a new goal — just change w, recompute V=M@w.
-
-        This is the key advantage: the transition model T and SR matrix M
-        stay the same. Only the reward vector w changes. This is instant.
-        """
+        """Recompute SR values for a new goal (instant: only w changes)."""
         self.w[:] = 0.0
         self.w[goal_clone] = 1.0
         self.V_sr = self.M_sr @ self.w
@@ -660,15 +495,10 @@ class CSCGSRMatrixAgent:
 # ════════════════════════════════════════════════════════════════════
 
 class CSCGSRExplorerAgent:
-    """CSCG + SR agent that discovers barriers by bumping into them.
+    """CSCG + SR with experience-based barrier discovery.
 
-    Neuroscience mapping:
-      place cells → CSCG belief state,  prediction error → bounce,
-      map plasticity → soft T update,   hippocampal replay → SR recomp,
-      VTE → adaptive exploration,       darting → random-walk escape.
-
-    Fair comparison: NO oracle access — localises via belief filtering,
-    discovers barriers from proprioceptive feedback only.
+    Localises via belief filtering, discovers barriers from bounce
+    feedback only.  No oracle access.
     """
 
     # ── tuning knobs (class-level, overridable per-subclass) ────────
@@ -727,16 +557,7 @@ class CSCGSRExplorerAgent:
         self.Q = np.einsum('asj,j->sa', self.T, w + self.gamma * V)
 
     def _barrier_update(self, action):
-        """Soft belief-weighted T update (vectorised).
-
-        For each clone with belief > barrier_belief_min that isn't already
-        a self-loop in the open model, mix in a self-loop proportional to
-        belief.  Returns True when the update was significant.
-
-        Higher barrier_belief_min reduces false barrier entries at the
-        cost of slower discovery.  Default 0.01 is permissive; 0.15
-        is a good conservative choice for long trials (max_steps >> 45).
-        """
+        """Soft belief-weighted T update.  Returns True if significant."""
         bmin = self._barrier_belief_min
         keep = (self.belief > bmin) & (np.diag(self.T_open[action]) <= 0.5)
         w = 0.8 * self.belief * keep
@@ -795,11 +616,7 @@ class CSCGSRExplorerAgent:
 
     def run_trial(self, start: int, env: GridEnv,
                   max_steps: int = 200, sim_seed: int = 0) -> int:
-        """Navigate to goal, discovering barriers by bumping.
-
-        Mechanisms: adaptive ε-greedy (VTE), bump-action suppression,
-        belief-weighted T update, deferred SR replay, loop-escape.
-        """
+        """Navigate to goal, discovering barriers by bumping."""
         self._reset_belief(env.obs_map[start])
         self._tc += 1
         # Inter-trial barrier decay toward open-arena T
@@ -1036,22 +853,7 @@ def run_cothi_experiment(env_name: str, n_seeds: int = 3,
                          trials_per_config: int = 10,
                          explore_steps: int = 15000,
                          gamma: float = 0.95) -> dict:
-    """Run the full Cothi-inspired experiment.
-
-    Phase 1 (open arena): All agents navigate to a fixed goal.
-    Phase 2 (barriers):   For each barrier config, run `trials_per_config`
-                          trials measuring steps-to-goal.
-
-    The CSCG is trained ONCE on the open arena (no barriers), then tested
-    on barrier configs without retraining — this mirrors Cothi et al.'s
-    setup where rats learned the open arena first, then faced barriers.
-
-    Cothi et al. (2022) used:
-      - 10×10 square arena (env 'cothi-10x10')
-      - 25 barrier configurations (structured walls)
-      - 10 trials per configuration
-      - Fixed goal location
-    """
+    """Run the full Cothi experiment: open arena then barrier trials."""
     is_cothi = env_name == "cothi-10x10"
     if is_cothi:
         room, goal, env_kw = make_cothi_arena()
@@ -1062,11 +864,11 @@ def run_cothi_experiment(env_name: str, n_seeds: int = 3,
     H, W = room.shape
     n_states = H * W
 
-    # Adaptive clones — Cothi arena needs more due to heavy aliasing
+    # Adaptive clones
     spo = (n_states + n_obs - 1) // n_obs
     if is_cothi:
-        n_clones = spo + spo  # 20 clones/obs for 10-way aliasing
-        explore = max(explore_steps, n_states * 600)  # 60k steps
+        n_clones = spo + spo
+        explore = max(explore_steps, n_states * 600)
     else:
         n_clones = spo + max(3, spo // 2)
         explore = max(explore_steps, n_states * 300)
@@ -1155,31 +957,14 @@ def run_cothi_experiment(env_name: str, n_seeds: int = 3,
 
         # ── Phase 2: Barrier configurations ──
         for ci, walls in enumerate(barrier_configs):
-            # Create environment with barriers
             barrier_env = GridEnv(room, goal, max_steps=200, seed=seed, **env_kw)
-            # Apply barriers
             for s, a, nb in walls:
-                barrier_env.adj[s][a] = s  # block movement
+                barrier_env.adj[s][a] = s
 
-            # MB agent gets perfect knowledge of the new barrier env
             mb_barrier = ModelBasedAgent(barrier_env, goal)
-
-            # obs-space SR recomputes with barrier info — but still fails
-            # because observation aliasing (10 obs for 100 states) dilutes
-            # the barrier signal, making its 10×10 SR matrix useless.
             obs_sr.update_env(barrier_env)
-
-            # CSCG+SR (stale) keeps the open-arena model — no adaptation.
-            # (It takes barrier_env as a parameter to run_trial for movement.)
-
-            # CSCG+SR (explore) resets to open-arena model and will
-            # discover barriers by bumping into them during navigation
             cscg_sr_explore.reset_for_config()
 
-            # CSCG+VI uses the SAME model (trained on open arena)
-            # — it does NOT retrain.
-
-            # Use paper's fixed starts if available, otherwise random
             if barrier_starts is not None:
                 config_starts = barrier_starts[ci]
                 starts = [config_starts.get(ti + 1, rng.choice(
@@ -1205,7 +990,6 @@ def run_cothi_experiment(env_name: str, n_seeds: int = 3,
             avg_barrier = all_steps[n][si].mean()
             print(f"    Barriers avg — {n:28s}: {avg_barrier:.1f} steps")
 
-    # ── Compute optimal (BFS) distances for normalisation ──
     opt_open = bfs_distances(base_env.adj, goal, n_states)
 
     return dict(
@@ -1270,14 +1054,11 @@ def plot_results(results: dict, outdir: str = "figures"):
                        rotation=15, fontsize=8)
     ax.grid(axis="y", alpha=0.3)
 
-    # ── Panel B: Barrier configs — averaged across trials ──
+    # ── Panel B: By barrier config ──
     ax = axes[1]
     for name in agent_names:
-        # Shape: (n_seeds, n_configs, n_trials)
-        # Average over trials → (n_seeds, n_configs)
         per_config = all_steps[name].mean(axis=2)
-        # Mean and SEM over seeds for each config
-        means = per_config.mean(axis=0)  # (n_configs,)
+        means = per_config.mean(axis=0)
         sems = per_config.std(axis=0) / np.sqrt(n_seeds)
         x = np.arange(1, n_configs + 1)
         ax.plot(x, means, 'o-', color=colors[name], label=name, lw=2, ms=4)
@@ -1289,12 +1070,10 @@ def plot_results(results: dict, outdir: str = "figures"):
     ax.legend(fontsize=7, loc="upper left")
     ax.grid(True, alpha=0.3)
 
-    # ── Panel C: Learning curve across trials (all configs pooled) ──
+    # ── Panel C: Learning curve ──
     ax = axes[2]
     for name in agent_names:
-        # Shape: (n_seeds, n_configs, n_trials) → pool configs
-        # For each trial index, average over all configs and seeds
-        per_trial = all_steps[name].mean(axis=1)  # (n_seeds, n_trials)
+        per_trial = all_steps[name].mean(axis=1)
         means = per_trial.mean(axis=0)
         sems = per_trial.std(axis=0) / np.sqrt(n_seeds)
         x = np.arange(1, n_trials + 1)
@@ -1345,12 +1124,7 @@ def plot_results(results: dict, outdir: str = "figures"):
 
 def analyze_sr_matrices(results: dict, chmm: CHMM, env: GridEnv,
                         gamma: float = 0.95, outdir: str = "figures"):
-    """Visualize and compare SR matrices on obs-space vs CSCG latent space.
-
-    This directly illustrates the blog's point: SR on observations is
-    a blurred, lossy version of the environment. SR on CSCG latent states
-    is meaningful because it operates on de-aliased positions.
-    """
+    """Visualize SR matrices: obs-space vs CSCG latent vs ground-truth."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1478,33 +1252,8 @@ def main():
 
         all_results[env_name] = results
 
-    # ── Print key findings ──
     print(f"\n{'═' * 65}")
-    print("  KEY FINDINGS (supporting blog.dileeplearning.com critique)")
-    print(f"{'═' * 65}")
-    print()
-    print("  1. SR on observation space fails EVEN with barrier info")
-    print("     because 10× aliasing collapses 100 states into 10 obs,")
-    print("     making it impossible to represent specific barriers.")
-    print()
-    print("  2. CSCG recovers the full 100-state space (bijective mapping)")
-    print("     from aliased observations.  CSCG+SR (explore) discovers")
-    print("     barriers by bumping into them — like a rat — and updates")
-    print("     its cognitive map via prediction errors + replay.")
-    print()
-    print("  3. Without experience, CSCG+SR fails (stale model).")
-    print("     With rat-like exploration (belief tracking + bounce")
-    print("     detection), CSCG+SR improves across trials, matching")
-    print("     the learning curves seen in rodent behavioural data.")
-    print()
-    print("  4. The explore agent uses NO oracle info: localization is")
-    print("     via CSCG belief state, barriers are felt not given.")
-    print()
-    print("  References:")
-    print("    Blog: https://blog.dileeplearning.com/p/"
-          "a-critique-of-successor-representations")
-    print("    Paper: https://www.sciencedirect.com/science/article/"
-          "pii/S0960982222010958")
+    print("  Done.  See figures/ for plots.")
     print(f"{'═' * 65}")
 
 
