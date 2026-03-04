@@ -336,34 +336,62 @@ def train_cscg(room: np.ndarray, env_kw: dict, n_clones_per_obs: int = 20,
 
 
 # ════════════════════════════════════════════════════════════════════
-#  Agent 3: CSCG + Value Iteration
+#  Agents 3 & 4: CSCG + VI / CSCG + SR (stale-model planners)
 # ════════════════════════════════════════════════════════════════════
 
-class CSCGVIAgent:
-    """CSCG world model + value iteration."""
+class _CSCGPlannerBase:
+    """Shared belief-tracking + greedy-Q trial loop for CSCG planners."""
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
-                 gamma: float = 0.95, vi_iters: int = 200):
-        self.chmm = chmm
-        self.n_obs = n_obs
-        self.gamma = gamma
-        self.vi_iters = vi_iters
-        self.name = "CSCG + VI"
-
+                 gamma: float = 0.95):
+        self.chmm, self.n_obs, self.gamma = chmm, n_obs, gamma
         self.n_clones_arr = chmm.n_clones
         self.n_cs = int(chmm.n_clones.sum())
         self.state_loc = np.hstack(([0], chmm.n_clones)).cumsum()
-
-        # Normalised transition
         T = chmm.T.astype(np.float64) + 1e-8
         self.T_norm = T / T.sum(axis=2, keepdims=True)
         self.w = np.zeros(self.n_cs); self.w[goal_clone] = 1.0
-        self.V = np.zeros(self.n_cs)
         self.Q = np.zeros((self.n_cs, 4))
-        self._value_iteration()
-
-        # Belief state
         self.belief = np.ones(self.n_cs) / self.n_cs
+
+    def _obs_mask(self, obs: int) -> np.ndarray:
+        m = np.zeros(self.n_cs)
+        m[self.state_loc[obs]:self.state_loc[obs + 1]] = 1.0
+        return m
+
+    def _update_belief(self, action: int, obs: int):
+        pred = self.T_norm[action].T @ self.belief
+        m = self._obs_mask(obs)
+        b = pred * m
+        self.belief = b / b.sum() if b.sum() > 0 else m / m.sum()
+
+    def run_trial(self, start: int, env: GridEnv,
+                  max_steps: int = 200) -> int:
+        """Greedy policy on belief-weighted Q."""
+        state, obs = start, env.obs_map[start]
+        m = self._obs_mask(obs)
+        self.belief = m / m.sum()
+        for step in range(1, max_steps + 1):
+            b = self.belief * self._obs_mask(obs)
+            s = b.sum()
+            b = b / s if s > 0 else self._obs_mask(obs) / self._obs_mask(obs).sum()
+            a = int(np.argmax(b @ self.Q))
+            state = env.adj[state][a]
+            obs = env.obs_map[state]
+            self._update_belief(a, obs)
+            if state == env.goal_state:
+                return step
+        return max_steps
+
+
+class CSCGVIAgent(_CSCGPlannerBase):
+    """CSCG + value iteration."""
+
+    def __init__(self, chmm, n_obs, goal_clone, gamma=0.95, vi_iters=200):
+        super().__init__(chmm, n_obs, goal_clone, gamma)
+        self.vi_iters = vi_iters
+        self.name = "CSCG + VI"
+        self._value_iteration()
 
     def _value_iteration(self):
         V = np.zeros(self.n_cs)
@@ -376,118 +404,29 @@ class CSCGVIAgent:
         self.V = V
         self.Q = np.einsum("asj,j->sa", self.T_norm, self.w + self.gamma * V)
 
-    def _obs_mask(self, obs: int) -> np.ndarray:
-        m = np.zeros(self.n_cs)
-        m[self.state_loc[obs]:self.state_loc[obs + 1]] = 1.0
-        return m
-
-    def _update_belief(self, action: int, obs: int):
-        pred = self.T_norm[action].T @ self.belief
-        m = self._obs_mask(obs)
-        b = pred * m
-        self.belief = b / b.sum() if b.sum() > 0 else m / m.sum()
-
-    def run_trial(self, start: int, env: GridEnv,
-                  max_steps: int = 200) -> int:
-        """Run one trial using belief-weighted Q values."""
-        self.belief = np.ones(self.n_cs) / self.n_cs
-        state = start
-        obs = env.obs_map[state]
-        # Initialize belief with first observation
-        m = self._obs_mask(obs)
-        self.belief = m / m.sum()
-
-        for step in range(1, max_steps + 1):
-            # Belief-weighted Q
-            b = self.belief * self._obs_mask(obs)
-            b = b / b.sum() if b.sum() > 0 else self._obs_mask(obs) / self._obs_mask(obs).sum()
-            q = b @ self.Q
-            a = int(np.argmax(q))
-
-            state = env.adj[state][a]
-            obs = env.obs_map[state]
-            self._update_belief(a, obs)
-
-            if state == env.goal_state:
-                return step
-        return max_steps
-
     def update_goal(self, goal_clone: int):
-        """Update reward vector and replan when goal changes."""
-        self.w[:] = 0.0
-        self.w[goal_clone] = 1.0
+        self.w[:] = 0.0; self.w[goal_clone] = 1.0
         self._value_iteration()
 
 
-# ════════════════════════════════════════════════════════════════════
-#  Agent 4: CSCG + Successor Representation (the key contribution)
-# ════════════════════════════════════════════════════════════════════
-
-class CSCGSRMatrixAgent:
+class CSCGSRMatrixAgent(_CSCGPlannerBase):
     """CSCG + SR matrix M = (I - γT)^{-1} on latent clone states."""
 
-    def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
-                 gamma: float = 0.95):
-        self.chmm = chmm
-        self.n_obs = n_obs
-        self.gamma = gamma
+    def __init__(self, chmm, n_obs, goal_clone, gamma=0.95):
+        super().__init__(chmm, n_obs, goal_clone, gamma)
         self.name = "CSCG + SR"
-
-        self.n_clones_arr = chmm.n_clones
-        self.n_cs = int(chmm.n_clones.sum())
-        self.state_loc = np.hstack(([0], chmm.n_clones)).cumsum()
-
-        T = chmm.T.astype(np.float64) + 1e-8
-        T_norm = T / T.sum(axis=2, keepdims=True)
-        self.T_norm = T_norm
-        T_avg = T_norm.mean(axis=0)
+        T_avg = self.T_norm.mean(axis=0)
         self.M_sr = np.linalg.inv(np.eye(self.n_cs) - gamma * T_avg)
-        self.w = np.zeros(self.n_cs); self.w[goal_clone] = 1.0
-        self.V_sr = self.M_sr @ self.w
-        self.Q = np.einsum("asj,j->sa", T_norm, self.w + gamma * self.V_sr)
-        self.belief = np.ones(self.n_cs) / self.n_cs
+        self._update_Q()
 
-    def _obs_mask(self, obs: int) -> np.ndarray:
-        m = np.zeros(self.n_cs)
-        m[self.state_loc[obs]:self.state_loc[obs + 1]] = 1.0
-        return m
-
-    def _update_belief(self, action: int, obs: int):
-        pred = self.T_norm[action].T @ self.belief
-        m = self._obs_mask(obs)
-        b = pred * m
-        self.belief = b / b.sum() if b.sum() > 0 else m / m.sum()
-
-    def run_trial(self, start: int, env: GridEnv,
-                  max_steps: int = 200) -> int:
-        """Run one trial using belief-weighted SR Q values."""
-        self.belief = np.ones(self.n_cs) / self.n_cs
-        state = start
-        obs = env.obs_map[state]
-        m = self._obs_mask(obs)
-        self.belief = m / m.sum()
-
-        for step in range(1, max_steps + 1):
-            b = self.belief * self._obs_mask(obs)
-            b = b / b.sum() if b.sum() > 0 else self._obs_mask(obs) / self._obs_mask(obs).sum()
-            q = b @ self.Q
-            a = int(np.argmax(q))
-
-            state = env.adj[state][a]
-            obs = env.obs_map[state]
-            self._update_belief(a, obs)
-
-            if state == env.goal_state:
-                return step
-        return max_steps
-
-    def update_goal(self, goal_clone: int):
-        """Recompute SR values for a new goal (instant: only w changes)."""
-        self.w[:] = 0.0
-        self.w[goal_clone] = 1.0
+    def _update_Q(self):
         self.V_sr = self.M_sr @ self.w
         self.Q = np.einsum("asj,j->sa", self.T_norm,
                            self.w + self.gamma * self.V_sr)
+
+    def update_goal(self, goal_clone: int):
+        self.w[:] = 0.0; self.w[goal_clone] = 1.0
+        self._update_Q()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -507,17 +446,10 @@ class CSCGSRExplorerAgent:
     _loop_window    = 20          # look-back for loop detection
     _loop_max_uniq  = 5           # unique-state threshold for loop
     _rw_steps       = 10          # random-walk escape length
-    _rw_steps_t1    = None        # shorter rw on T1–T3 (None = same)
     _uncertain_thresh = 0.10      # b.max() below this → pure random
     _bump_cool      = 0.0         # belief soften after bump (0 = off)
     _continue_after_goal = False  # post-goal exploration (MB only)
     _barrier_decay  = 0.0         # inter-trial T decay toward open T
-    _stale_window   = 0           # stuck-bmax detector (0 = off)
-    _stale_rw       = 5           # rw after stale detection
-    _stale_bmax_range = (0.40, 0.60)
-    _mstep_window   = 0           # multi-step re-filter (0 = off)
-    _mstep_interval = 0           # re-filter every N steps
-    _mstep_bmax_thresh = 0.65     # only when bmax < this
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
@@ -588,23 +520,6 @@ class CSCGSRExplorerAgent:
         m = self._obs_mask(obs)
         self.belief = m / m.sum()
 
-    def _forward_filter(self, obs_list, act_list):
-        """Forward algorithm on (obs, act) window from uniform prior."""
-        if len(obs_list) < 2 or len(act_list) < 1:
-            return None
-        b = self._obs_mask(obs_list[0])
-        s = b.sum()
-        b = b / s if s > 0 else np.ones(self.n_cs) / self.n_cs
-        for i in range(len(act_list)):
-            b = (self.T[act_list[i]].T @ b) * self._obs_mask(obs_list[i + 1])
-            s = b.sum()
-            if s > 0:
-                b /= s
-            else:
-                m = self._obs_mask(obs_list[i + 1])
-                b = m / m.sum() if m.sum() > 0 else np.ones(self.n_cs) / self.n_cs
-        return b
-
     # ── public interface ────────────────────────────────────────────
 
     def reset_for_config(self):
@@ -631,10 +546,6 @@ class CSCGSRExplorerAgent:
         # Adaptive softmax threshold: exploratory on early trials
         _eff_thresh = max(self._softmax_thresh,
                           self._softmax_early - (self._softmax_early - self._softmax_thresh) * min(self._tc - 1, 3) / 3)
-        # Trial-adaptive random-walk length
-        rw_len = self._rw_steps
-        if self._rw_steps_t1 is not None and self._tc <= 3:
-            rw_len = min(self._rw_steps, self._rw_steps_t1 + (self._tc - 1))
 
         state, obs = start, env.obs_map[start]
         bumped_a: set = set()  # actions that bumped at *current* state
@@ -643,11 +554,6 @@ class CSCGSRExplorerAgent:
         stuck = 0              # consecutive steps at same cell
         prev = -1
         found_step = 0         # step goal was first reached (0 = not yet)
-        stale_count = 0        # consecutive steps with bmax stuck in range
-        last_bmax = 0.0
-        obs_hist = [obs]       # sliding window for multi-step filtering
-        act_hist: list = []
-        last_refilter = 0
 
         for step in range(1, max_steps + 1):
             # ── new-state bookkeeping ──
@@ -671,41 +577,15 @@ class CSCGSRExplorerAgent:
                 self._predict_and_correct(a, obs)
                 continue
 
-            # ── stale-belief detection ──
-            cur_bmax = self.belief.max()
-            blo, bhi = self._stale_bmax_range
-            if self._stale_window > 0 and rw == 0:
-                if blo <= cur_bmax <= bhi and abs(cur_bmax - last_bmax) < 0.05:
-                    stale_count += 1
-                else:
-                    stale_count = 0
-                if stale_count >= self._stale_window:
-                    self._reset_belief(obs)
-                    recent.clear(); rw = self._stale_rw; stale_count = 0
-                    obs_hist = [obs]; act_hist = []; last_refilter = step
-            last_bmax = cur_bmax
-
-            # ── multi-step re-filtering ──
-            if (self._mstep_window > 0 and rw == 0
-                    and step - last_refilter >= self._mstep_interval
-                    and self.belief.max() < self._mstep_bmax_thresh):
-                w = self._mstep_window
-                b = self._forward_filter(obs_hist[-w:], act_hist[-(w-1):])
-                if b is not None and b.max() > self.belief.max():
-                    self.belief = b
-                last_refilter = step
-
             # ── stuck / loop detection ──
             recent.append(state)
             if len(recent) > self._loop_window:
                 recent.pop(0)
             if stuck >= 4:
                 self._reset_belief(obs); stuck = 0
-                obs_hist = [obs]; act_hist = []; last_refilter = step
             elif (len(recent) >= self._loop_window
                   and len(set(recent)) <= self._loop_max_uniq and rw == 0):
-                self._reset_belief(obs); recent.clear(); rw = rw_len
-                obs_hist = [obs]; act_hist = []; last_refilter = step
+                self._reset_belief(obs); recent.clear(); rw = self._rw_steps
 
             # ── action selection ──
             if rw > 0:
@@ -747,8 +627,6 @@ class CSCGSRExplorerAgent:
                 if self._barrier_update(a):
                     self._recompute()
             state, obs = ns, env.obs_map[ns]
-            act_hist.append(a)
-            obs_hist.append(obs)
             self._predict_and_correct(a, obs)
             if state == env.goal_state:
                 found_step = step      # record success, keep exploring
@@ -776,12 +654,7 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
     _continue_after_goal = True   # deliberate post-goal model update
     _barrier_decay = 0.05         # inter-trial T decay
     _bump_cool = 0.15             # belief soften after bump
-    _rw_steps_t1 = 7              # shorter rw on T1–T3
     _uncertain_thresh = 0.0       # softmax handles all uncertainty
-    _stale_window = 8             # stuck-bmax detector
-    _stale_rw = 5
-    _mstep_window = 8             # multi-step re-filtering
-    _mstep_interval = 1
 
     def __init__(self, chmm, n_obs, goal_clone, state_to_clone, open_env,
                  gamma=0.95, epsilon=0.00, barrier_belief_min=0.01):
