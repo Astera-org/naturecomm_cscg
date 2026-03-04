@@ -680,6 +680,9 @@ class CSCGSRExplorerAgent:
     _rw_steps_t1    = None   # shorter rw on early trials (None = use _rw_steps)
     _uncertain_thresh = 0.10 # b.max() below this → pure random (skip Q)
     _bump_cool      = 0.0    # belief softening after barrier bump (0 = off)
+    _stale_window   = 0      # steps of stuck bmax before reset+rw (0 = off)
+    _stale_rw       = 5      # rw length after stale detection
+    _stale_bmax_range = (0.40, 0.60)  # only trigger when bmax in this range
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
@@ -811,6 +814,8 @@ class CSCGSRExplorerAgent:
         prev = -1
         found_step = 0         # step goal was first reached (0 = not yet)
         continue_after = getattr(self, '_continue_after_goal', False)
+        stale_count = 0        # consecutive steps with bmax stuck in range
+        last_bmax = 0.0
 
         for step in range(1, max_steps + 1):
             # ── new-state bookkeeping ──
@@ -838,6 +843,25 @@ class CSCGSRExplorerAgent:
                 state, obs = ns, env.obs_map[ns]
                 self._predict_and_correct(a, obs)
                 continue
+
+            # ── stale-belief detection ──
+            # When b.max() is stuck in [0.40, 0.60] for too many steps,
+            # the agent is trapped between two equally-likely clones.
+            # Reset belief and do a short random-walk to relocate to
+            # a position where observations can disambiguate.
+            cur_bmax = self.belief.max()
+            blo, bhi = self._stale_bmax_range
+            if self._stale_window > 0 and rw == 0:
+                if blo <= cur_bmax <= bhi and abs(cur_bmax - last_bmax) < 0.05:
+                    stale_count += 1
+                else:
+                    stale_count = 0
+                if stale_count >= self._stale_window:
+                    self._reset_belief(obs)
+                    recent.clear()
+                    rw = self._stale_rw
+                    stale_count = 0
+            last_bmax = cur_bmax
 
             # ── stuck / loop detection ──
             recent.append(state)
@@ -949,6 +973,8 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self._bump_cool = 0.15             # belief softening after barrier bump
         self._rw_steps_t1 = 7             # shorter rw on T1–T3 (saves ~3 steps)
         self._uncertain_thresh = 0.05     # enter softmax Q earlier (b.max() ≥ 0.05)
+        self._stale_window = 8            # detect stuck belief (bmax ~0.5 for 8 steps)
+        self._stale_rw = 5                # short rw to relocate after stale detection
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs
