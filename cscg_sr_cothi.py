@@ -677,6 +677,8 @@ class CSCGSRExplorerAgent:
     _loop_window    = 20     # steps to look back for loop detection
     _loop_max_uniq  = 5      # unique states threshold for loop
     _rw_steps       = 10     # random-walk escape duration
+    _rw_steps_t1    = None   # shorter rw on early trials (None = use _rw_steps)
+    _uncertain_thresh = 0.10 # b.max() below this → pure random (skip Q)
     _bump_cool      = 0.0    # belief softening after barrier bump (0 = off)
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
@@ -794,6 +796,13 @@ class CSCGSRExplorerAgent:
         _eff_thresh = max(self._softmax_thresh,
                           self._softmax_early - (self._softmax_early - self._softmax_thresh) * min(self._tc - 1, 3) / 3)
 
+        # Trial-adaptive random-walk length: shorter on early trials
+        # saves ~2–3 steps per escape when step budget is tightest.
+        rw_len = self._rw_steps
+        if self._rw_steps_t1 is not None and self._tc <= 3:
+            rw_len = min(self._rw_steps,
+                         self._rw_steps_t1 + (self._tc - 1))
+
         state, obs = start, env.obs_map[start]
         bumped_a: set = set()  # actions that bumped at *current* state
         recent: list = []      # sliding window for loop detection
@@ -839,7 +848,7 @@ class CSCGSRExplorerAgent:
                 stuck = 0               # keep bumped_a — avoid re-bumping
             elif len(recent) >= self._loop_window and len(set(recent)) <= self._loop_max_uniq and rw == 0:
                 self._reset_belief(obs)
-                recent.clear(); rw = self._rw_steps
+                recent.clear(); rw = rw_len
 
             # ── action selection ──
             if rw > 0:
@@ -855,9 +864,9 @@ class CSCGSRExplorerAgent:
                     # ε-random: uniform over non-bumped actions
                     ok = [d for d in range(4) if d not in bumped_a]
                     a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
-                elif b.max() < 0.10:
-                    # Very uncertain (10+ candidate clones) → pure random.
-                    # Q values averaged over 10+ locations are noise;
+                elif b.max() < self._uncertain_thresh:
+                    # Very uncertain → pure random.
+                    # Q values averaged over many locations are noise;
                     # random steps give diverse observations to localise.
                     ok = [d for d in range(4) if d not in bumped_a]
                     a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
@@ -938,6 +947,8 @@ class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
         self._continue_after_goal = True   # MB: deliberate post-trial model update
         self._barrier_decay = 0.05         # inter-trial T decay toward open model
         self._bump_cool = 0.15             # belief softening after barrier bump
+        self._rw_steps_t1 = 7             # shorter rw on T1–T3 (saves ~3 steps)
+        self._uncertain_thresh = 0.05     # enter softmax Q earlier (b.max() ≥ 0.05)
         self._recompute()
         self._tc = 0
         self.belief = np.ones(self.n_cs) / self.n_cs

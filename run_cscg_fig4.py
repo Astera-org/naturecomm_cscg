@@ -212,7 +212,7 @@ def run_experiment():
             # Create fresh agents for each sim (reuse the CSCG model)
             bfs_explore = CSCGBFSExplorerAgent(
                 chmm, n_obs, goal_clone, state_to_clone, base_env,
-                gamma=0.95, epsilon=0.05, barrier_belief_min=0.10)
+                gamma=0.95, epsilon=0.02, barrier_belief_min=0.10)
 
             sr_explore = CSCGSRExplorerAgent(
                 chmm, n_obs, goal_clone, state_to_clone, base_env,
