@@ -671,21 +671,23 @@ class CSCGSRExplorerAgent:
     discovers barriers from proprioceptive feedback only.
     """
 
-    # Tuning knobs (class-level defaults, overridable per-instance)
-    _softmax_thresh = 0.33   # b.max() below this → softmax exploration
-    _softmax_early  = 0.55   # higher threshold for early trials (T1–T3)
-    _loop_window    = 20     # steps to look back for loop detection
-    _loop_max_uniq  = 5      # unique states threshold for loop
-    _rw_steps       = 10     # random-walk escape duration
-    _rw_steps_t1    = None   # shorter rw on early trials (None = use _rw_steps)
-    _uncertain_thresh = 0.10 # b.max() below this → pure random (skip Q)
-    _bump_cool      = 0.0    # belief softening after barrier bump (0 = off)
-    _stale_window   = 0      # steps of stuck bmax before reset+rw (0 = off)
-    _stale_rw       = 5      # rw length after stale detection
-    _stale_bmax_range = (0.40, 0.60)  # only trigger when bmax in this range
-    _mstep_window   = 0      # multi-step re-filtering window (0 = off)
-    _mstep_interval = 0      # re-filter every N steps
-    _mstep_bmax_thresh = 0.65  # only re-filter when bmax < this
+    # ── tuning knobs (class-level, overridable per-subclass) ────────
+    _softmax_thresh = 0.33        # b.max() below this → softmax
+    _softmax_early  = 0.55        # higher thresh on early trials (T1–T3)
+    _loop_window    = 20          # look-back for loop detection
+    _loop_max_uniq  = 5           # unique-state threshold for loop
+    _rw_steps       = 10          # random-walk escape length
+    _rw_steps_t1    = None        # shorter rw on T1–T3 (None = same)
+    _uncertain_thresh = 0.10      # b.max() below this → pure random
+    _bump_cool      = 0.0         # belief soften after bump (0 = off)
+    _continue_after_goal = False  # post-goal exploration (MB only)
+    _barrier_decay  = 0.0         # inter-trial T decay toward open T
+    _stale_window   = 0           # stuck-bmax detector (0 = off)
+    _stale_rw       = 5           # rw after stale detection
+    _stale_bmax_range = (0.40, 0.60)
+    _mstep_window   = 0           # multi-step re-filter (0 = off)
+    _mstep_interval = 0           # re-filter every N steps
+    _mstep_bmax_thresh = 0.65     # only when bmax < this
 
     def __init__(self, chmm: CHMM, n_obs: int, goal_clone: int,
                  state_to_clone: Dict[int, int], open_env: GridEnv,
@@ -765,6 +767,23 @@ class CSCGSRExplorerAgent:
         m = self._obs_mask(obs)
         self.belief = m / m.sum()
 
+    def _forward_filter(self, obs_list, act_list):
+        """Forward algorithm on (obs, act) window from uniform prior."""
+        if len(obs_list) < 2 or len(act_list) < 1:
+            return None
+        b = self._obs_mask(obs_list[0])
+        s = b.sum()
+        b = b / s if s > 0 else np.ones(self.n_cs) / self.n_cs
+        for i in range(len(act_list)):
+            b = (self.T[act_list[i]].T @ b) * self._obs_mask(obs_list[i + 1])
+            s = b.sum()
+            if s > 0:
+                b /= s
+            else:
+                m = self._obs_mask(obs_list[i + 1])
+                b = m / m.sum() if m.sum() > 0 else np.ones(self.n_cs) / self.n_cs
+        return b
+
     # ── public interface ────────────────────────────────────────────
 
     def reset_for_config(self):
@@ -783,31 +802,22 @@ class CSCGSRExplorerAgent:
         """
         self._reset_belief(env.obs_map[start])
         self._tc += 1
-        # Inter-trial barrier decay: slight mix toward open-arena T
-        # prevents stale false barriers from accumulating.
-        decay = getattr(self, '_barrier_decay', 0.0)
-        if decay > 0 and self._tc > 1:
-            self.T = (1 - decay) * self.T + decay * self.T_open
+        # Inter-trial barrier decay toward open-arena T
+        if self._barrier_decay > 0 and self._tc > 1:
+            self.T = (1 - self._barrier_decay) * self.T + self._barrier_decay * self.T_open
             for aa in range(4):
-                rs = self.T[aa].sum(1, keepdims=True)
-                rs[rs == 0] = 1
+                rs = self.T[aa].sum(1, keepdims=True); rs[rs == 0] = 1
                 self.T[aa] /= rs
             self._recompute()
-        # Combine sim_seed, start pos, and trial counter into a uint32 RNG seed
-        raw = sim_seed * 100003 + start * 1009 + self._tc
-        rng = np.random.RandomState(raw % (2**32))
+        rng = np.random.RandomState((sim_seed * 100003 + start * 1009 + self._tc) % (2**32))
 
-        # Adaptive softmax threshold: more exploratory when barrier
-        # knowledge is scarce (early trials), decays to baseline.
+        # Adaptive softmax threshold: exploratory on early trials
         _eff_thresh = max(self._softmax_thresh,
                           self._softmax_early - (self._softmax_early - self._softmax_thresh) * min(self._tc - 1, 3) / 3)
-
-        # Trial-adaptive random-walk length: shorter on early trials
-        # saves ~2–3 steps per escape when step budget is tightest.
+        # Trial-adaptive random-walk length
         rw_len = self._rw_steps
         if self._rw_steps_t1 is not None and self._tc <= 3:
-            rw_len = min(self._rw_steps,
-                         self._rw_steps_t1 + (self._tc - 1))
+            rw_len = min(self._rw_steps, self._rw_steps_t1 + (self._tc - 1))
 
         state, obs = start, env.obs_map[start]
         bumped_a: set = set()  # actions that bumped at *current* state
@@ -816,11 +826,10 @@ class CSCGSRExplorerAgent:
         stuck = 0              # consecutive steps at same cell
         prev = -1
         found_step = 0         # step goal was first reached (0 = not yet)
-        continue_after = getattr(self, '_continue_after_goal', False)
         stale_count = 0        # consecutive steps with bmax stuck in range
         last_bmax = 0.0
-        obs_hist = [obs]           # observation history for multi-step filtering
-        act_hist = []              # action history for multi-step filtering
+        obs_hist = [obs]       # sliding window for multi-step filtering
+        act_hist: list = []
         last_refilter = 0
 
         for step in range(1, max_steps + 1):
@@ -832,14 +841,9 @@ class CSCGSRExplorerAgent:
             prev = state
 
             # ── post-goal continued exploration (MB only) ──
-            # Model-based agents deliberately update their world model
-            # after reaching the goal — random-walk to discover barriers
-            # for future trials. SR agents learn passively through
-            # experience and return immediately (matching biology:
-            # habitual system doesn't do deliberate post-trial replay).
             if found_step > 0:
-                if not continue_after:
-                    break                # SR: stop immediately
+                if not self._continue_after_goal:
+                    break
                 a = rng.randint(4)
                 ns = env.adj[state][a]
                 if ns == state:
@@ -851,10 +855,6 @@ class CSCGSRExplorerAgent:
                 continue
 
             # ── stale-belief detection ──
-            # When b.max() is stuck in [0.40, 0.60] for too many steps,
-            # the agent is trapped between two equally-likely clones.
-            # Reset belief and do a short random-walk to relocate to
-            # a position where observations can disambiguate.
             cur_bmax = self.belief.max()
             blo, bhi = self._stale_bmax_range
             if self._stale_window > 0 and rw == 0:
@@ -864,51 +864,30 @@ class CSCGSRExplorerAgent:
                     stale_count = 0
                 if stale_count >= self._stale_window:
                     self._reset_belief(obs)
-                    recent.clear()
-                    rw = self._stale_rw
-                    stale_count = 0
+                    recent.clear(); rw = self._stale_rw; stale_count = 0
                     obs_hist = [obs]; act_hist = []; last_refilter = step
             last_bmax = cur_bmax
 
             # ── multi-step re-filtering ──
-            # When belief is uncertain, re-run the forward algorithm
-            # on a sliding window of recent (obs, action) pairs
-            # starting from a uniform prior.  This sharpens the
-            # posterior because it jointly considers multiple
-            # observation–transition steps rather than relying on
-            # the single-step Bayesian update alone.
-            if (self._mstep_window > 0 and self._mstep_interval > 0
-                and rw == 0 and step - last_refilter >= self._mstep_interval
-                and self.belief.max() < self._mstep_bmax_thresh):
+            if (self._mstep_window > 0 and rw == 0
+                    and step - last_refilter >= self._mstep_interval
+                    and self.belief.max() < self._mstep_bmax_thresh):
                 w = self._mstep_window
-                obs_w = obs_hist[-w:] if len(obs_hist) > w else obs_hist
-                act_w = act_hist[-(w-1):] if len(act_hist) > (w-1) else act_hist
-                if len(obs_w) >= 2 and len(act_w) >= 1:
-                    b = self._obs_mask(obs_w[0])
-                    b = b / b.sum() if b.sum() > 0 else np.ones(self.n_cs) / self.n_cs
-                    for i in range(len(act_w)):
-                        b = (self.T[act_w[i]].T @ b) * self._obs_mask(obs_w[i + 1])
-                        bs = b.sum()
-                        if bs > 0:
-                            b /= bs
-                        else:
-                            b = self._obs_mask(obs_w[i + 1])
-                            b = b / b.sum() if b.sum() > 0 else np.ones(self.n_cs) / self.n_cs
-                    if b.max() > self.belief.max():
-                        self.belief = b
-                    last_refilter = step
+                b = self._forward_filter(obs_hist[-w:], act_hist[-(w-1):])
+                if b is not None and b.max() > self.belief.max():
+                    self.belief = b
+                last_refilter = step
 
             # ── stuck / loop detection ──
             recent.append(state)
             if len(recent) > self._loop_window:
                 recent.pop(0)
-            if stuck >= 4:               # stuck at one cell
-                self._reset_belief(obs)
-                stuck = 0               # keep bumped_a — avoid re-bumping
+            if stuck >= 4:
+                self._reset_belief(obs); stuck = 0
                 obs_hist = [obs]; act_hist = []; last_refilter = step
-            elif len(recent) >= self._loop_window and len(set(recent)) <= self._loop_max_uniq and rw == 0:
-                self._reset_belief(obs)
-                recent.clear(); rw = rw_len
+            elif (len(recent) >= self._loop_window
+                  and len(set(recent)) <= self._loop_max_uniq and rw == 0):
+                self._reset_belief(obs); recent.clear(); rw = rw_len
                 obs_hist = [obs]; act_hist = []; last_refilter = step
 
             # ── action selection ──
@@ -921,48 +900,35 @@ class CSCGSRExplorerAgent:
                 q = b @ self.Q
                 for ba in bumped_a:
                     q[ba] = -1e9
-                if rng.random() < self.epsilon:
-                    # ε-random: uniform over non-bumped actions
-                    ok = [d for d in range(4) if d not in bumped_a]
-                    a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
-                elif b.max() < self._uncertain_thresh:
-                    # Very uncertain → pure random.
-                    # Q values averaged over many locations are noise;
-                    # random steps give diverse observations to localise.
-                    ok = [d for d in range(4) if d not in bumped_a]
+                ok = [d for d in range(4) if d not in bumped_a]
+                if rng.random() < self.epsilon or b.max() < self._uncertain_thresh:
+                    # ε-random or very uncertain → uniform over non-bumped
                     a = ok[rng.randint(len(ok))] if ok else rng.randint(4)
                 elif b.max() < _eff_thresh:
-                    # Moderately uncertain → softmax exploration (Q-guided,
-                    # but not fully greedy).  Temperature ∝ uncertainty.
+                    # Softmax exploration (temperature ∝ uncertainty)
                     tau = max(0.3, 2.0 * (1.0 - b.max()))
                     q_safe = q.copy()
-                    reachable = q_safe > -1e8
-                    if reachable.any():
-                        q_safe[~reachable] = q_safe[reachable].min() - 100
+                    reach = q_safe > -1e8
+                    if reach.any():
+                        q_safe[~reach] = q_safe[reach].min() - 100
                     else:
-                        q_safe[:] = 0.0          # all unreachable → uniform
+                        q_safe[:] = 0.0
                     logits = (q_safe - q_safe.max()) / tau
-                    probs = np.exp(logits)
-                    probs /= probs.sum()
+                    probs = np.exp(logits); probs /= probs.sum()
                     a = int(rng.choice(4, p=probs))
                 else:
-                    # High-certainty belief → greedy
                     a = int(np.argmax(q))
 
             # ── step + barrier detection ──
             ns = env.adj[state][a]
-            if ns == state:                      # bounce (prediction error)
+            if ns == state:  # bounce
                 bumped_a.add(a)
-                # Bump cooling: a barrier surprise may indicate
-                # mislocalization — gently broaden the belief.
-                if self._bump_cool > 0:
-                    obs_uni = self._obs_mask(obs)
-                    obs_s = obs_uni.sum()
-                    if obs_s > 0:
-                        self.belief = ((1 - self._bump_cool) * self.belief
-                                       + self._bump_cool * obs_uni / obs_s)
+                if self._bump_cool > 0:  # soften belief on surprise
+                    m = self._obs_mask(obs); ms = m.sum()
+                    if ms > 0:
+                        self.belief = (1 - self._bump_cool) * self.belief + self._bump_cool * m / ms
                 if self._barrier_update(a):
-                    self._recompute()   # instant replay — no deferral
+                    self._recompute()
             state, obs = ns, env.obs_map[ns]
             act_hist.append(a)
             obs_hist.append(obs)
@@ -984,62 +950,34 @@ class CSCGSRExplorerAgent:
 class CSCGBFSExplorerAgent(CSCGSRExplorerAgent):
     """CSCG explore agent with BFS planning instead of SR.
 
-    Identical to CSCGSRExplorerAgent (same belief filtering, same
-    barrier discovery via bumping, same T updates) but replaces the
-    SR-based Q values with BFS shortest-path on the discovered
-    clone-space graph.
-
-    Tests the blog's claim: "model-based with imperfection → matches biology"
+    Same belief filtering and barrier discovery, but replaces
+    SR Q-values with Dijkstra shortest-path on the learned graph.
     """
 
-    def __init__(self, chmm, n_obs, goal_clone, state_to_clone, open_env,
-                 gamma=0.95, epsilon=0.25, barrier_belief_min=0.01):
-        # Call grandparent __init__ would be complicated, so we
-        # replicate the parent's __init__ then override _recompute.
-        self.gamma, self.epsilon = gamma, epsilon
-        self.goal_clone = goal_clone
-        self._barrier_belief_min = barrier_belief_min
-        self.name = "CSCG + BFS (explore)"
-        self.n_cs = int(chmm.n_clones.sum())
-        self._sloc = np.hstack(([0], chmm.n_clones)).cumsum()
+    # BFS-specific overrides (class-level → inherited by all instances)
+    _barrier_alpha = 8.0          # Dijkstra barrier-cost weight
+    _continue_after_goal = True   # deliberate post-goal model update
+    _barrier_decay = 0.05         # inter-trial T decay
+    _bump_cool = 0.15             # belief soften after bump
+    _rw_steps_t1 = 7              # shorter rw on T1–T3
+    _uncertain_thresh = 0.0       # softmax handles all uncertainty
+    _stale_window = 8             # stuck-bmax detector
+    _stale_rw = 5
+    _mstep_window = 8             # multi-step re-filtering
+    _mstep_interval = 1
 
-        self.T_open = self._build_T(state_to_clone, open_env)
-        self.T = self.T_open.copy()
-        self.Q = np.zeros((self.n_cs, 4))
-        self._barrier_alpha = 8.0   # Dijkstra barrier-avoidance weight
-        self._continue_after_goal = True   # MB: deliberate post-trial model update
-        self._barrier_decay = 0.05         # inter-trial T decay toward open model
-        self._bump_cool = 0.15             # belief softening after barrier bump
-        self._rw_steps_t1 = 7             # shorter rw on T1–T3 (saves ~3 steps)
-        self._uncertain_thresh = 0.05     # enter softmax Q earlier (b.max() ≥ 0.05)
-        self._stale_window = 8            # detect stuck belief (bmax ~0.5 for 8 steps)
-        self._stale_rw = 5                # short rw to relocate after stale detection
-        self._mstep_window = 8            # multi-step re-filtering window
-        self._mstep_interval = 1          # re-filter every step
-        self._recompute()
-        self._tc = 0
-        self.belief = np.ones(self.n_cs) / self.n_cs
+    def __init__(self, chmm, n_obs, goal_clone, state_to_clone, open_env,
+                 gamma=0.95, epsilon=0.00, barrier_belief_min=0.01):
+        super().__init__(chmm, n_obs, goal_clone, state_to_clone, open_env,
+                         gamma, epsilon, barrier_belief_min)
+        self.name = "CSCG + BFS (explore)"
 
     def _recompute(self):
-        """Dijkstra-based Q values with barrier-aware edge costs.
+        """Dijkstra Q-values with barrier-aware edge costs.
 
-        Unlike plain BFS (unit cost per edge), transitions carrying
-        accumulated barrier evidence pay a cost penalty proportional
-        to the *excess* self-loop probability over the open-arena
-        baseline:
+        cost(c, a) = 1 + α · max(0, T[a,c,c] − T_open[a,c,c])
 
-            cost(c, a) = 1  +  α · max(0, T[a,c,c] − T_open[a,c,c])
-
-        This makes the planner prefer routes through confidently-open
-        transitions and detour around suspicious ones — even when the
-        argmax hasn't flipped yet (partial barrier evidence).  It is
-        strictly more informative than BFS: when no barriers have been
-        encountered, all excess = 0 and costs are uniform → degenerates
-        to ordinary BFS.
-
-        Biologically, this corresponds to model-based agents mentally
-        simulating their planned route and assigning uncertainty cost
-        to transitions with evidence of blockage.
+        Degenerates to unit-cost BFS when no barriers are discovered.
         """
         import heapq
         n_cs = self.n_cs
